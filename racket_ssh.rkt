@@ -1,20 +1,6 @@
- #lang racket
-(require openssl/sha1)
-(require "dh.rkt")
-(require racket/port)
-(require net/base64)
+#lang racket
+(require "ssh_openssl.rkt")
 
-(define (ssh-host-public-file->blob fn)
-  (define b64 (call-with-input-file fn (lambda (is) (port->bytes is))))
-  (base64-decode (regexp-replace #px"\\S+\\s+(\\S+)\\s+\\S+" b64 #"\\1")))
-
-;  (define in (open-input-bytes data))
-;  (values (read-ssh-string in) (read-ssh-string in) (read-ssh-string in)))
-
-(define (write-packet x out)
-  (write-bytes x out)
-  (flush-output out))
-  
 (define (->bytes x)
   (cond [(string? x) (string->bytes/locale x)]
         [(bytes? x) x]
@@ -32,19 +18,9 @@
 ;  (eprintf "SSHSTR: ~a~n" len)
   data)
 
-(define (read-ssh-bool in)
-  (if (= 0 (read-byte in))
-      #f
-      #t))
-
-(define (read-ssh-uint32 in)
-  (integer-bytes->integer (read-bytes 4 in) #f #t))
-
-(define (random-bytes cnt)
-  (apply bytes (for/list ([x (in-range cnt)])
-                        (random 256))))
-
-
+(define (read-ssh-bool in) (if (= 0 (read-byte in)) #f #t))
+(define (read-ssh-uint32 in) (integer-bytes->integer (read-bytes 4 in) #f #t))
+(define (random-bytes cnt) (apply bytes (for/list ([x (in-range cnt)]) (random 256))))
 
 (define (build-kexinit)
   (bytes-append
@@ -61,7 +37,7 @@
   (build-ssh-bytes #"none,zlib@openssh.com,zlib")
   (build-ssh-bytes #"")
   (build-ssh-bytes #"")
-  (bytes 1)
+  (bytes 0)
   (integer->integer-bytes 0 4 #t)))
 
 (define (parse-kexinit bytes)
@@ -178,18 +154,37 @@
   (class object%
     (init-field (in null)
                 (out null))
+    (field (cipher-in (make-cipher)))
+    (field (cipher-out (make-cipher)))
     (field (hmac #f))
+    (field (hmaclen 16))
+    (field (cipher-block-size 16))
+    (field (shared-secret null))
+    (field (sendIV null))
+    (field (recvIV null))
     (field (sentcnt 0))
-    (define/public (hmac-on)
+    (field (recvcnt 0))
+    (define/public (hmac-on shared-secret session_id IV EC Integ)
+      (set! sendIV IV)
+      (set! recvIV IV)
+      (encrypt-init cipher-out "aes-128" EC IV)
+      (decrypt-init cipher-in  "aes-128" EC IV)
       (set! hmac #t))
-    (define/public (send-packet x)
+
+    (define/public (send-raw-bytes x)
       (write-bytes x out)
-      (when hmac
-        (let ([b (MD5-it (bytes-append (->bytes sentcnt) x))])
-          (printf "MD5 ~a ~a\n" sentcnt (bytes->hex-string b))
-          (write-bytes b out)))
       (flush-output out)
       (set! sentcnt (+ sentcnt 1)))
+
+    (define (updateIV ivv)
+      (lambda (iv)
+        (set! ivv (let* ([b (bytes-append ivv iv)]
+                         [bl (bytes-length b)])
+                    (subbytes b (- bl cipher-block-size) bl)))))
+
+    (define updateSentIV (updateIV sendIV))
+    (define updateRecvIV (updateIV sendIV))
+
     (define (build-packet buffer)
       (define buf (->bytes buffer))
       (define blen (bytes-length buf))
@@ -197,21 +192,24 @@
       (define ipadding-len (- 8 (modulo initial-total-len 8)))
       (define padding-len (if (ipadding-len . < . 4) (+ ipadding-len 8) ipadding-len))
       (define packet-length (+ 1 blen padding-len))
-      (eprintf "BUILD PKT: pktlen: ~a padding ~a datalen ~a type ~a~n" packet-length padding-len blen (bytes-ref buffer 0))
+      (define type (bytes-ref buffer 0))
+      (eprintf "SENT PKT: type ~a pktlen: ~a padding ~a datalen ~a\n" type packet-length padding-len blen)
       ;(eprintf "~a\n" (bytes->hex-string buf))
       (bytes-append
         (integer->integer-bytes packet-length 4 #f #t)
         (bytes padding-len)
         buf
         (random-bytes padding-len)))
-    (define/public (read-packet)
+
+    (define/public (parse-packet buffer)
+      (define in (open-input-bytes buffer))
       (define packet-len (integer-bytes->integer (read-bytes 4 in) #f #t))
       (define padding-len (read-byte in))
-      (define data-len (- packet-len 1 padding-len 0))
+      (define data-len (- packet-len 1 padding-len))
       (define data (read-bytes data-len in))
       (define padding (read-bytes padding-len in))
       (define type (bytes-ref data 0))
-      (eprintf "RECV PKT: pktlen: ~a padding ~a datalen ~a type ~a~n" packet-len padding-len data-len type)
+      (eprintf "RECV PKT: type ~a pktlen: ~a padding ~a datalen ~a~n" type packet-len padding-len data-len)
       ;(eprintf "~a\n" (bytes->hex-string data))
       (when (= type 1)
         (define in (open-input-bytes data))
@@ -222,8 +220,41 @@
         (printf "SSH_CLOSE_CONNECTION ~a desc: ~a langtag: ~a\n" ec s1 s2))
       data)
 
-    (define/public (send-build-packet buffer)
-      (send-packet (build-packet buffer)))
+    (define/public (recv-parse-packet) (parse-packet (recv-packet)))
+    (define/public (recv-packet)
+      (begin0
+      (if hmac
+        (let* ([prefix-size (max 4 16)]
+               [enc-prefix (read-bytes (max 4 16) in)]
+               [prefix (decrypt-begin cipher-in enc-prefix recvIV)]
+               [packet-len (integer-bytes->integer (subbytes prefix 0 4) #f #t)]
+               [enc-rest (read-bytes packet-len in)]
+               [rest (decrypt-rest cipher-in enc-rest)]
+               [hmac (read-bytes hmaclen in)]
+               [pkt (bytes-append prefix enc-rest)]
+               [comp-hmac (MD5-it (bytes-append (->bytes recvcnt) pkt))])
+          (if (bytes=? hmac comp-hmac)
+            pkt
+            (error (format "HMAC DOESNT MATCH ~a ~a\n" hmac comp-hmac))))
+        (let* ([prefix-size 4]
+               [prefix (read-bytes prefix-size in)]
+               [packet-len (integer-bytes->integer prefix #f #t)]
+               [rest (read-bytes packet-len in)]
+               [pkt (bytes-append prefix rest)])
+          pkt))
+      (set! recvcnt (+ recvcnt 1))))
+
+    (define/public (send-build-packet buffer) (send-packet (build-packet buffer)))
+    (define/public (send-packet pkt)
+      (if hmac
+        (let ([b (MD5-it (bytes-append (->bytes sentcnt) pkt))])
+          (printf "MD5 ~a ~a\n" sentcnt (bytes->hex-string b))
+          (write-bytes (encrypt-all cipher-out pkt sendIV) out)
+          (write-bytes b out)
+          (updateSentIV pkt))
+        (write-bytes pkt out))
+      (flush-output out)
+      (set! sentcnt (+ sentcnt 1)))
 
     (super-new)))
 
@@ -234,9 +265,9 @@
     (define/public (send-buffer x)
       (send io send-build-packet x))
     (define/public (send-raw x)
-      (send io send-packet x))
+      (send io send-raw-bytes x))
     (define/public (recv-packet)
-      (send io read-packet))
+      (send io recv-parse-packet))
     (define/public (connect host port)
       (define-values (in out) (tcp-connect "localhost" 2224))
       (set! io (new ssh-transport (in in) (out out)))
@@ -265,8 +296,12 @@
           (let-values ([(s-host-key s-sig server-pub-key sigtype sig) (parse-dh-group-exch-gex-reply (recv-packet))])
             (let-values ([(shared-secret) (DiffieHellman-get-shared-secret dh server-pub-key)])
             (printf "~a~n" (bytes->hex-string (recv-packet)))
-            (send-buffer (bytes SSH_MSG_NEWKEYS)))))
+            (send-buffer (bytes SSH_MSG_NEWKEYS))))))
     
+;IV (sha256->bin shared-secret #"A" session_id) 
+;EC (sha256->bin shared-secret #"C" session_id) 
+;Integ (sha256->bin shared-secret #"E" session_id) 
+
       (send io hmac-on))
  
     (super-new)))
@@ -294,12 +329,9 @@
   (class object%
     (init-field (host "localhost") (port 22))
     (field (io null))
-    (define/public (send-buffer x)
-      (send io send-build-packet x))
-    (define/public (send-raw x)
-      (send io send-packet x))
-    (define/public (recv-packet)
-      (send io read-packet))
+    (define/public (send-buffer x) (send io send-build-packet x))
+    (define/public (send-raw x)    (send io send-raw-bytes x))
+    (define/public (recv-packet)   (send io recv-parse-packet))
     (define/public (listen)
       (define-values (in out) (tcp-accept (tcp-listen 2222 4 #t)))
       (set! io (new ssh-transport (in in) (out out)))
@@ -329,33 +361,45 @@
       (define sshp (build-ssh-bytes p))
       (define sshg (build-ssh-bytes g))
       (define public-host-key-blob (ssh-host-public-file->blob "/home/tewk/.ssh/rktsshhost.pub"))
-      (define (chomprn x) (regexp-replace "\r\n$" x ""))
-      (let-values ([(bmin bm bmax) (parse-dh-group-exch-req (recv-packet))])
-        (send-buffer (bytes-append (bytes KEXDH_GEX_GROUP) sshp sshg))
-        (let-values ([(client-e) (parse-dh-group-exch-init (recv-packet))])
-          (let-values ([(dh pub shared-secret) (DiffieHellmanGroup14-get-shared-secret client-e)])
-            (printf "E   ~a ~a~n" (bytes-length client-e) (bytes->hex-string client-e))
-            (printf "PUB ~a~n" (bytes->hex-string pub))
-            (printf "SS  ~a~n" (bytes->hex-string shared-secret))
-            (define hash (sha256->hex (build-ssh-bytes (chomprn CLIENT_VERSION)) (build-ssh-bytes (chomprn SERVER_VERSION))
-                                      (build-ssh-bytes CLIENT_KEX_PAYLOAD) (build-ssh-bytes SERVER_KEX_PAYLOAD)
-                                      (build-ssh-bytes public-host-key-blob)
-                                      (->bytes bmin) (->bytes bm) (->bytes bmax) sshp sshg 
-                                      (build-ssh-bytes client-e)
-                                      pub
-                                      (build-ssh-bytes shared-secret)))
-            (send-buffer (bytes-append (bytes KEXDH_GEX_REPLY) 
-                         (build-ssh-bytes public-host-key-blob)
-                         pub
-                         (build-ssh-bytes (bytes-append (build-ssh-bytes #"ssh-rsa") (build-ssh-bytes hash)))))))
+      (define (chomprn x) (regexp-replace "\r$" (regexp-replace "\n$" (regexp-replace "\r\n$" x "") "") ""))
+      (define-values (bmin bm bmax) (parse-dh-group-exch-req (recv-packet)))
+      (send-buffer (bytes-append (bytes KEXDH_GEX_GROUP) sshp sshg))
+      (define-values (client-e) (parse-dh-group-exch-init (recv-packet)))
+      (define-values (dh pub shared-secret) (DiffieHellmanGroup14-get-shared-secret client-e))
+      (printf "E   ~a ~a~n" (bytes-length client-e) (bytes->hex-string client-e))
+      (printf "PUB ~a~n" (bytes->hex-string pub))
+      (printf "SS  ~a~n" (bytes->hex-string shared-secret))
+      (define exchange-hash 
+        (sha256->bin 
+          (build-ssh-bytes (chomprn CLIENT_VERSION)) 
+          (build-ssh-bytes (chomprn SERVER_VERSION))
+          (build-ssh-bytes CLIENT_KEX_PAYLOAD)
+          (build-ssh-bytes SERVER_KEX_PAYLOAD)
+          (build-ssh-bytes public-host-key-blob)
+          (->bytes bmin) (->bytes bm) (->bytes bmax) 
+          sshp 
+          sshg 
+          (build-ssh-bytes client-e)
+          pub
+          (build-ssh-bytes shared-secret)))
+      (define signature (sha1-rsa-signature/fn "/home/tewk/.ssh/rktsshhost" exchange-hash))
+      (send-buffer (bytes-append 
+        (bytes KEXDH_GEX_REPLY) 
+        (build-ssh-bytes public-host-key-blob)
+        pub
+        (build-ssh-bytes (bytes-append (build-ssh-bytes #"ssh-rsa") (build-ssh-bytes signature)))))
 
 
 
-        (printf "~a~n" (bytes->hex-string (recv-packet)))
-        (printf "~a~n" (bytes->hex-string (recv-packet)))
-      )
-      
-      (send io hmac-on))
+      (printf "CLIENT SSH_MSG_NEWKEYS ~a~n" (bytes->hex-string (recv-packet)))
+      (define session_id exchange-hash)
+      (define IV (sha256->bin shared-secret exchange-hash #"B" session_id))
+      (define EC (sha256->bin shared-secret exchange-hash #"D" session_id))
+      (define Integ (sha256->bin shared-secret exchange-hash #"F" session_id))
+      (send-buffer (bytes SSH_MSG_NEWKEYS))
+      (send io hmac-on shared-secret session_id IV EC Integ)
+
+      (printf "~a~n" (bytes->hex-string (recv-packet))))
     (super-new)))
 
 (match (current-command-line-arguments)
