@@ -12,6 +12,7 @@
          sha256->hex
          sha256->bin
          build-ssh-bn
+         build-ssh-bin
          fn->EVP_PKEY-private
          sha1-rsa-signature
          sha1-rsa-signature/fn)
@@ -56,6 +57,7 @@
 (define _EVP_CIPHER_CTX-pointer _pointer)
 (define _EVP_CIPHER-pointer _pointer)
 (define _ASN1_TYPE-pointer _pointer)
+(define _HMAC_CTX-pointer _pointer)
 
 (define-crypto-func OpenSSL_add_all_algorithms (_fun -> _void))
 (define-crypto-func OpenSSL_add_all_digests    (_fun -> _void))
@@ -169,6 +171,15 @@
  
 ;(define-crypto-func EVP_SignInit    (_fun _EVP_MD_CTX-pointer _EVP_MD-pointer                 -> _void))
 
+(define-crypto-func HMAC          (_fun _EVP_MD-pointer _bytes _int _bytes _int _bytes (_ptr io _int) -> _bytes))
+(define-crypto-func HMAC_CTX_init (_fun _HMAC_CTX-pointer -> _void))
+(define-crypto-func HMAC_Init     (_fun _HMAC_CTX-pointer _bytes _int _EVP_MD-pointer -> _void))
+(define-crypto-func HMAC_Init_ex  (_fun _HMAC_CTX-pointer _bytes _int (_or-null _EVP_MD-pointer) (_or-null _ENGINE-pointer) -> _void))
+(define-crypto-func HMAC_Update   (_fun _HMAC_CTX-pointer _bytes _int -> _void))
+(define-crypto-func HMAC_Final    (_fun _HMAC_CTX-pointer _bytes (_ptr io _int) -> _void))
+(define-crypto-func HMAC_CTX_cleanup (_fun _HMAC_CTX-pointer -> _void))
+(define-crypto-func HMAC_cleanup     (_fun _HMAC_CTX-pointer -> _void))
+
 (define-crypto-func EVP_PKEY_new         (_fun                       -> _EVP_PKEY-pointer))
 (define-crypto-func EVP_PKEY_free        (_fun _EVP_PKEY-pointer     -> _void))
 (define-crypto-func EVP_PKEY_set1_RSA    (_fun _EVP_PKEY-pointer _RSA-pointer    -> _int))
@@ -199,14 +210,17 @@
 (define-crypto-func EVP_CIPHER_CTX_set_key_length (_fun  _EVP_CIPHER_CTX-pointer _int -> _int))
 (define-crypto-func EVP_CIPHER_CTX_ctrl (_fun _EVP_CIPHER_CTX-pointer _int _int _pointer -> _int))
 
+(define-crypto-func EVP_CIPHER_CTX_block_size (_fun _EVP_CIPHER_CTX-pointer -> _int))
+(define-crypto-func EVP_CIPHER_CTX_key_length (_fun _EVP_CIPHER_CTX-pointer -> _int))
+(define-crypto-func EVP_CIPHER_CTX_iv_length  (_fun _EVP_CIPHER_CTX-pointer -> _int))
 
 (define-crypto-func EVP_EncryptInit_ex (_fun _EVP_CIPHER_CTX-pointer _EVP_CIPHER-pointer (_or-null _ENGINE-pointer) (_or-null (_ptr i _bytes)) (_or-null (_ptr i _bytes)) -> _int))
 (define-crypto-func EVP_EncryptUpdate (_fun _EVP_CIPHER_CTX-pointer _bytes (_ptr io _int) _bytes _int -> _int))
 (define-crypto-func EVP_EncryptFinal_ex (_fun _EVP_CIPHER_CTX-pointer _bytes (_ptr io _int) -> _int))
 
 (define-crypto-func EVP_DecryptInit_ex (_fun _EVP_CIPHER_CTX-pointer _EVP_CIPHER-pointer (_or-null _ENGINE-pointer) (_or-null (_ptr i _bytes)) (_or-null (_ptr i _bytes)) -> _int))
-(define-crypto-func EVP_DecryptUpdate (_fun _EVP_CIPHER_CTX-pointer _bytes (_ptr io _int) _bytes _int -> _int))
-(define-crypto-func EVP_DecryptFinal_ex (_fun _EVP_CIPHER_CTX-pointer _bytes (_ptr io _int) -> _int))
+(define-crypto-func EVP_DecryptUpdate (_fun _EVP_CIPHER_CTX-pointer _bytes (i : (_ptr o _int)) _bytes _int -> (i2 : _int) -> (values i2 i)))
+(define-crypto-func EVP_DecryptFinal_ex (_fun _EVP_CIPHER_CTX-pointer _bytes (i : (_ptr o _int)) -> (i2 : _int) -> (values i2 i)))
 
 (define-crypto-func EVP_CipherInit_ex (_fun _EVP_CIPHER_CTX-pointer _EVP_CIPHER-pointer (_or-null _ENGINE-pointer) (_or-null (_ptr i _bytes)) (_or-null (_ptr i _bytes)) _int -> _int))
 (define-crypto-func EVP_CipherUpdate (_fun _EVP_CIPHER_CTX-pointer _bytes (_ptr io _int) _bytes _int -> _int))
@@ -324,25 +338,19 @@ EVP_aes_256_ofb)
     (EVP_DigestUpdate ctx b (bytes-length b))
     (EVP_DigestFinal ctx db dl)
     (define digest (subbytes db 0 20))
-;  (printf "D~a ~a\n" dl (bytes->hex-string digest))
     (define pk (fn->RSAPrivateKey fn))
     (define sl (RSA_size pk))
     (define sb (make-bytes sl))
-;  (printf "RSAS ~a\n" (RSA_size pk))
-  (printf "RSA-SIGN ~a\n" (RSA_sign NID_sha1 digest (bytes-length digest) sb sl pk))
-    (define sign (subbytes sb 0 sl))
-  (printf "RSA-VERIFY~a\n" (RSA_verify NID_sha1 digest (bytes-length digest) sign (bytes-length sign) pk))
-;  (printf "S~a ~a\n" sl (bytes->hex-string sign)) 
-    sign))
+    (RSA_sign NID_sha1 digest (bytes-length digest) sb sl pk)
+    (subbytes sb 0 sl)))
 
 (define (sha1-rsa-signature b key)
   (let ([digest (make-bytes EVP_MAX_MD_SIZE)]
-        [dl 32]
+        [dl EVP_MAX_MD_SIZE]
         [ctx (EVP_MD_CTX_create)])
     (EVP_DigestInit ctx (EVP_sha1))
     (EVP_DigestUpdate ctx b (bytes-length b))
     (EVP_SignFinal ctx digest dl key)
-;  (printf "D4~a ~a\n" dl (bytes->hex-string (subbytes digest 0 dl)))
     (subbytes digest 0 dl)))
 
 (define (fn->EVP_PKEY-private fn)
@@ -378,11 +386,8 @@ EVP_aes_256_ofb)
         [result (make-bytes SHA256_DIGEST_LENGTH)])
     (SHA256_Init ctx)
     (for ([x lst]) 
- ;     (printf "sha256R ~a\n" x)
-      (printf "sha256I ~a\n" (bytes->hex-string x))
       (SHA256_Update ctx x (bytes-length x)))
     (SHA256_Final result ctx)
-    (printf "sha256 ~a\n" (bytes->hex-string result))
     result))
 
 
@@ -393,18 +398,17 @@ EVP_aes_256_ofb)
 (define (BN_num_bytes bn)
   (ceiling (/ (+ (BN_num_bits bn) 7) 8)))
 
+(define (build-ssh-bin b)
+  (define bl (bytes-length b))
+  (if (not (= 0 (bitwise-and #x80 (bytes-ref b 0))))
+    (bytes-append (->bytes (+ bl 1)) (bytes 0) b)
+    (bytes-append (->bytes bl) b)))
+
 (define (build-ssh-bn bn)
   (define b (make-bytes (BN_num_bytes bn) 0))
-  ;(printf "~a~n" (BN_num_bytes bn))
   (define bl (BN_bn2bin bn b))
-  (let ([bs
-    (if (not (= 0 (bitwise-and #x80 (bytes-ref b 0))))
-      (bytes-append (->bytes (+ bl 1)) (bytes 0) (subbytes b 0 bl))
-      (bytes-append (->bytes bl) (subbytes b 0 bl)))])
-    ;(printf "B& ~a ~a\n~a\n~a\n" (bytes->hex-string (bytes (bytes-ref b 0))) (bitwise-and #x80 (bytes-ref b 0))
-    ;                         (bytes->hex-string b)
-   ;                          (bytes->hex-string bs))
-    bs))
+  (build-ssh-bin (subbytes b 0 bl)))
+
 (define (BNp bn)
   (define bits-set (for/sum ([i (in-range (BN_num_bits bn))]) (BN_is_bit_set bn i)))
   (define b (make-bytes (BN_num_bytes bn) 0))
@@ -455,7 +459,7 @@ EVP_aes_256_ofb)
 (define (DiffieHellmanGenerateKey dh bits-needed)
   (define pbits (BN_num_bits (DH-p dh)))
   (define bits-needed*2 (* 2 bits-needed))
-  (printf "~a ~a ~a\n" bits-needed bits-needed*2 pbits)
+  ;(printf "~a ~a ~a\n" bits-needed bits-needed*2 pbits)
   (when (bits-needed . > . (/ 2147483647 2))
     (eprintf "DiffieHellmanGenerateKey group too bi: ~a (2*bits-needed ~a)\n" pbits bits-needed*2))
   (when (bits-needed*2 . >= . pbits)
@@ -470,12 +474,8 @@ EVP_aes_256_ofb)
     (when (= 0 (DH_generate_key dh))
       (eprintf "DH_generate_key failed"))
     (if (not (DiffieHellmanPubIsValid dh (DH-pub_key dh) "desc"))
-     (begin 
-      (printf "ISVALID FAILED\n")
-      (loop))
-     (begin
-      (printf "ISVALID SUCCEEDED\n")
-      #t))))
+      (loop)
+      #t)))
 
 (define-syntax-rule (with-BN ([a b]...) body ...)
   (let* ([a null] ...)
@@ -493,12 +493,12 @@ EVP_aes_256_ofb)
 
 (define (DiffieHellmanPubIsValid dh pub desc)
  (with-BN ([tmp (BN_new)])
-  (printf "publ ") (BNp (DH-pub_key dh))
-  (printf "priv ") (BNp (DH-priv_key dh))
-  (printf "p    ") (BNp (DH-p dh))
+  ;(printf "publ ") (BNp (DH-pub_key dh))
+  ;(printf "priv ") (BNp (DH-priv_key dh))
+  ;(printf "p    ") (BNp (DH-p dh))
   (BN_sub tmp (DH-p dh) (BN_value_one))
-  (printf "p-1  ") (BNp tmp)
-  (printf "cmp pub tmp ~a\n" (BN_cmp pub tmp))
+  ;(printf "p-1  ") (BNp tmp)
+  ;(printf "cmp pub tmp ~a\n" (BN_cmp pub tmp))
   (cond 
    [(not (zero? (BN-neg pub))) (eprintf "~a pub is negative" desc) #f]
    [(not (= 1 (BN_cmp pub (BN_value_one)))) (eprintf "~a pub is <= 1" desc) #f]
@@ -513,7 +513,7 @@ EVP_aes_256_ofb)
   [else
     (define pbits (BN_num_bits (DH-p dh)))
     (define pub-bits-set (for/sum ([i (in-range pbits)]) (BN_is_bit_set pub i)))
-    (eprintf "bits set ~a/~a\n" pub-bits-set pbits)
+    ;(eprintf "bits set ~a/~a\n" pub-bits-set pbits)
     (if (pub-bits-set . > . 1)
       #t
       (begin
@@ -543,8 +543,6 @@ EVP_aes_256_ofb)
   (define e (BN_new))
   (BN_hex2bn p p_s)
   (BN_dec2bn g #"2")
-;  (BNp p)
-;  (BNp g)
   (BN_bin2bn peer-public-key (bytes-length peer-public-key) e)
   (set-DH-p! dh p)
   (set-DH-g! dh g)

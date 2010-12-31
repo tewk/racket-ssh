@@ -29,8 +29,10 @@
   (build-ssh-bytes #"diffie-hellman-group-exchange-sha256,diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1")
   ;(build-ssh-bytes #"diffie-hellman-group1-sha1")
   (build-ssh-bytes #"ssh-rsa,ssh-dss")
-  (build-ssh-bytes #"aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,aes256-cbc,arcfour,rijndael-cbc@lysator.liu.se")
-  (build-ssh-bytes #"aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,aes256-cbc,arcfour,rijndael-cbc@lysator.liu.se")
+;  (build-ssh-bytes #"aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,aes256-cbc,arcfour,rijndael-cbc@lysator.liu.se")
+;  (build-ssh-bytes #"aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,aes256-cbc,arcfour,rijndael-cbc@lysator.liu.se")
+  (build-ssh-bytes #"aes128-cbc")
+  (build-ssh-bytes #"aes128-cbc")
   (build-ssh-bytes #"hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96")
   (build-ssh-bytes #"hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96")
   (build-ssh-bytes #"none,zlib@openssh.com,zlib")
@@ -156,25 +158,34 @@
                 (out null))
     (field (cipher-in (make-cipher)))
     (field (cipher-out (make-cipher)))
+    (field (hmac-in (make-hmac)))
+    (field (hmac-out (make-hmac)))
     (field (hmac #f))
     (field (hmaclen 16))
     (field (cipher-block-size 16))
     (field (shared-secret null))
     (field (sendIV null))
     (field (recvIV null))
+    (field (sendInteg null))
+    (field (recvInteg null))
     (field (sentcnt 0))
     (field (recvcnt 0))
-    (define/public (hmac-on shared-secret session_id IV EC Integ)
-      (set! sendIV IV)
-      (set! recvIV IV)
-      (encrypt-init cipher-out "aes-128" EC IV)
-      (decrypt-init cipher-in  "aes-128" EC IV)
+
+    (define/public (hmac-on shared-secret session_id EIV EEC EInteg DIV DEC DInteg)
+      (set! sendIV EIV)
+      (set! recvIV DIV)
+      (set! sendInteg EInteg)
+      (set! recvInteg DInteg)
+      (encrypt-init cipher-out "aes-128" EEC EIV)
+      (decrypt-init cipher-in  "aes-128" DEC DIV)
+      (hmac-init hmac-out "md5" EInteg)
+      (hmac-init hmac-in  "md5" DInteg)
       (set! hmac #t))
 
     (define/public (send-raw-bytes x)
       (write-bytes x out)
-      (flush-output out)
-      (set! sentcnt (+ sentcnt 1)))
+      (flush-output out))
+    ;  (set! sentcnt (+ sentcnt 1)))
 
     (define (updateIV ivv)
       (lambda (iv)
@@ -228,14 +239,19 @@
                [enc-prefix (read-bytes (max 4 16) in)]
                [prefix (decrypt-begin cipher-in enc-prefix recvIV)]
                [packet-len (integer-bytes->integer (subbytes prefix 0 4) #f #t)]
-               [enc-rest (read-bytes packet-len in)]
+               [enc-rest (read-bytes (- packet-len 12) in)]
                [rest (decrypt-rest cipher-in enc-rest)]
                [hmac (read-bytes hmaclen in)]
-               [pkt (bytes-append prefix enc-rest)]
-               [comp-hmac (MD5-it (bytes-append (->bytes recvcnt) pkt))])
+               [pkt (bytes-append prefix rest)]
+               [comp-hmac (hmacit hmac-in (bytes-append recvInteg (->bytes (add1 recvcnt)) rest))])
+         (printf "ENC RECV ~a ~a ~a\n" packet-len (bytes->hex-string enc-prefix) (bytes->hex-string enc-rest))
+         (printf "ENC RECV ~a ~a ~a\n" packet-len (bytes->hex-string prefix) (bytes->hex-string rest))
           (if (bytes=? hmac comp-hmac)
             pkt
-            (error (format "HMAC DOESNT MATCH ~a ~a\n" hmac comp-hmac))))
+            (begin 
+              (printf "HMAC DOESNT MATCH TH ~a MI ~a\n" (bytes->hex-string hmac) (bytes->hex-string comp-hmac))
+              (printf "~a ~a\n" prefix rest)
+              pkt)))
         (let* ([prefix-size 4]
                [prefix (read-bytes prefix-size in)]
                [packet-len (integer-bytes->integer prefix #f #t)]
@@ -247,7 +263,7 @@
     (define/public (send-build-packet buffer) (send-packet (build-packet buffer)))
     (define/public (send-packet pkt)
       (if hmac
-        (let ([b (MD5-it (bytes-append (->bytes sentcnt) pkt))])
+        (let ([b (hmacit hmac-out (bytes-append sendInteg (->bytes sentcnt) pkt))])
           (printf "MD5 ~a ~a\n" sentcnt (bytes->hex-string b))
           (write-bytes (encrypt-all cipher-out pkt sendIV) out)
           (write-bytes b out)
@@ -366,9 +382,10 @@
       (send-buffer (bytes-append (bytes KEXDH_GEX_GROUP) sshp sshg))
       (define-values (client-e) (parse-dh-group-exch-init (recv-packet)))
       (define-values (dh pub shared-secret) (DiffieHellmanGroup14-get-shared-secret client-e))
-      (printf "E   ~a ~a~n" (bytes-length client-e) (bytes->hex-string client-e))
-      (printf "PUB ~a~n" (bytes->hex-string pub))
-      (printf "SS  ~a~n" (bytes->hex-string shared-secret))
+      (define ssh-shared-secret (build-ssh-bin shared-secret))
+  ;    (printf "E   ~a ~a~n" (bytes-length client-e) (bytes->hex-string client-e))
+  ;    (printf "PUB ~a~n" (bytes->hex-string pub))
+  ;    (printf "SS  ~a~n" (bytes->hex-string ssh-shared-secret))
       (define exchange-hash 
         (sha256->bin 
           (build-ssh-bytes (chomprn CLIENT_VERSION)) 
@@ -381,7 +398,7 @@
           sshg 
           (build-ssh-bytes client-e)
           pub
-          (build-ssh-bytes shared-secret)))
+          ssh-shared-secret))
       (define signature (sha1-rsa-signature/fn "/home/tewk/.ssh/rktsshhost" exchange-hash))
       (send-buffer (bytes-append 
         (bytes KEXDH_GEX_REPLY) 
@@ -393,13 +410,16 @@
 
       (printf "CLIENT SSH_MSG_NEWKEYS ~a~n" (bytes->hex-string (recv-packet)))
       (define session_id exchange-hash)
-      (define IV (sha256->bin shared-secret exchange-hash #"B" session_id))
-      (define EC (sha256->bin shared-secret exchange-hash #"D" session_id))
-      (define Integ (sha256->bin shared-secret exchange-hash #"F" session_id))
+      (define DIV (sha256->bin ssh-shared-secret exchange-hash #"A" session_id))
+      (define DEC (sha256->bin ssh-shared-secret exchange-hash #"C" session_id))
+      (define DInteg (sha256->bin ssh-shared-secret exchange-hash #"E" session_id))
+      (define EIV (sha256->bin ssh-shared-secret exchange-hash #"B" session_id))
+      (define EEC (sha256->bin ssh-shared-secret exchange-hash #"D" session_id))
+      (define EInteg (sha256->bin ssh-shared-secret exchange-hash #"F" session_id))
       (send-buffer (bytes SSH_MSG_NEWKEYS))
-      (send io hmac-on shared-secret session_id IV EC Integ)
+      (send io hmac-on shared-secret session_id EIV EEC EInteg DIV DEC DInteg)
 
-      (printf "~a~n" (bytes->hex-string (recv-packet))))
+      (printf "~a\n" (read-ssh-string (open-input-bytes (recv-packet)))))
     (super-new)))
 
 (match (current-command-line-arguments)
