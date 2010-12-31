@@ -11,6 +11,8 @@
          DiffieHellmanGroup14-get-shared-secret
          sha256->hex
          sha256->bin
+         sha1->hex
+         sha1->bin
          build-ssh-bn
          build-ssh-bin
          fn->EVP_PKEY-private
@@ -64,6 +66,7 @@
 
 (define EVP_MAX_MD_SIZE 64)
 (define NID_sha1 64)
+(define SHA1_DIGEST_LENGTH 20)
 (define SHA256_DIGEST_LENGTH 32)
 
 (define-crypto-func DH_new          (_fun                                     -> _DH-pointer))
@@ -105,18 +108,18 @@
 
 (define-crypto-func MD5_Init           (_fun _MD5_CTX-pointer                    -> _int))
 (define-crypto-func MD5_Update         (_fun _MD5_CTX-pointer _bytes _long       -> _int))
-(define-crypto-func MD5_Final          (_fun (_bytes o EVP_MAX_MD_SIZE) _MD5_CTX-pointer    -> _int))
+(define-crypto-func MD5_Final          (_fun _bytes _MD5_CTX-pointer             -> _int))
 (define-crypto-func MD5                (_fun _bytes _long (_ptr i _bytes)        -> _int))
 (define-crypto-func MD5_Transform      (_fun _MD5_CTX-pointer _bytes             -> _void))
 (define-crypto-func SHA1_Init          (_fun _SHA1_CTX-pointer                   -> _int))
 (define-crypto-func SHA1_Update        (_fun _SHA1_CTX-pointer _bytes _long      -> _int))
-(define-crypto-func SHA1_Final         (_fun (_bytes o EVP_MAX_MD_SIZE) _SHA1_CTX-pointer   -> _int))
+(define-crypto-func SHA1_Final         (_fun _bytes _SHA1_CTX-pointer            -> _int))
 (define-crypto-func SHA1               (_fun _bytes _long (_ptr i _bytes)        -> _int))
 (define-crypto-func SHA1_Transform     (_fun _SHA1_CTX-pointer _bytes            -> _void))
 (define-crypto-func SHA256_Init        (_fun _SHA256_CTX-pointer                 -> _int))
 (define-crypto-func SHA256_Update      (_fun _SHA256_CTX-pointer _bytes _long    -> _int))
 
-(define-crypto-func SHA256_Final       (_fun _bytes _SHA256_CTX-pointer -> _int))
+(define-crypto-func SHA256_Final       (_fun _bytes _SHA256_CTX-pointer          -> _int))
 (define-crypto-func SHA256             (_fun _bytes _long (_ptr i _bytes)        -> _int))
 (define-crypto-func SHA256_Transform   (_fun _SHA256_CTX-pointer _bytes          -> _void))
 
@@ -176,7 +179,7 @@
 (define-crypto-func HMAC_Init     (_fun _HMAC_CTX-pointer _bytes _int _EVP_MD-pointer -> _void))
 (define-crypto-func HMAC_Init_ex  (_fun _HMAC_CTX-pointer _bytes _int (_or-null _EVP_MD-pointer) (_or-null _ENGINE-pointer) -> _void))
 (define-crypto-func HMAC_Update   (_fun _HMAC_CTX-pointer _bytes _int -> _void))
-(define-crypto-func HMAC_Final    (_fun _HMAC_CTX-pointer _bytes (_ptr io _int) -> _void))
+(define-crypto-func HMAC_Final    (_fun _HMAC_CTX-pointer _bytes (i : (_ptr o _int)) -> _void -> i))
 (define-crypto-func HMAC_CTX_cleanup (_fun _HMAC_CTX-pointer -> _void))
 (define-crypto-func HMAC_cleanup     (_fun _HMAC_CTX-pointer -> _void))
 
@@ -223,8 +226,8 @@
 (define-crypto-func EVP_DecryptFinal_ex (_fun _EVP_CIPHER_CTX-pointer _bytes (i : (_ptr o _int)) -> (i2 : _int) -> (values i2 i)))
 
 (define-crypto-func EVP_CipherInit_ex (_fun _EVP_CIPHER_CTX-pointer _EVP_CIPHER-pointer (_or-null _ENGINE-pointer) (_or-null (_ptr i _bytes)) (_or-null (_ptr i _bytes)) _int -> _int))
-(define-crypto-func EVP_CipherUpdate (_fun _EVP_CIPHER_CTX-pointer _bytes (_ptr io _int) _bytes _int -> _int))
-(define-crypto-func EVP_CipherFinal_ex (_fun _EVP_CIPHER_CTX-pointer _bytes (_ptr io _int) -> _int))
+(define-crypto-func EVP_CipherUpdate (_fun _EVP_CIPHER_CTX-pointer _bytes (ol : (_ptr o _int)) _bytes _int -> (rc : _int) -> (values rc ol)))
+(define-crypto-func EVP_CipherFinal_ex (_fun _EVP_CIPHER_CTX-pointer _bytes (ol : (_ptr o _int)) -> (rc : _int) -> (values rc ol)))
 
 (define-crypto-func EVP_EncryptInit (_fun _EVP_CIPHER_CTX-pointer _EVP_CIPHER-pointer _bytes _bytes -> _int))
 (define-crypto-func EVP_EncryptFinal (_fun _EVP_CIPHER_CTX-pointer _bytes (_ptr io _int) -> _int))
@@ -372,7 +375,7 @@ EVP_aes_256_ofb)
 (define (sha1->bin . lst)
   (let ([ctx (malloc 256)]
         [tmp (make-bytes 4096)]
-        [result (make-bytes 20)])
+        [result (make-bytes SHA1_DIGEST_LENGTH)])
     (SHA1_Init ctx)
     (for ([x lst]) (SHA1_Update ctx x (bytes-length x)))
     (SHA1_Final result ctx)

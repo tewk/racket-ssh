@@ -11,6 +11,8 @@
          DiffieHellman-get-public-key
          DiffieHellman-get-shared-secret
          DiffieHellmanGroup14-get-shared-secret
+         sha1->hex
+         sha1->bin
          sha256->hex
          sha256->bin
          build-ssh-bn
@@ -28,12 +30,19 @@
     ))
 
 (define name->cipher
-  #hash(("aes-128" . 'KKEVP_aes_128_cbc)))
+  (make-hash (list (cons "aes-128" EVP_aes_128_cbc))))
 
 (define (ssh-name->cipher ssh-name)
   (hash-ref name->cipher ssh-name 
     (lambda () (error (format "Cipher ~a not found" ssh-name)))))
   
+(define name->hmac
+  (make-hash (list (cons "md5" EVP_md5)
+                   (cons "sha1" EVP_sha1))))
+
+(define (ssh-name->hmac ssh-name)
+  (hash-ref name->hmac ssh-name 
+    (lambda () (error (format "HMAC ~a not found" ssh-name)))))
   
 (define/provide (make-cipher)
   (define c (EVP_CIPHER_CTX_new))
@@ -46,13 +55,14 @@
   c)
 
 (define/provide (hmac-init hcntx ssh-name key)
-  (HMAC_Init_ex hcntx key (bytes-length key) (EVP_md5) #f))
+  (HMAC_Init_ex hcntx (subbytes key 0 16) 16 ((ssh-name->hmac ssh-name)) #f))
 
 (define/provide (hmacit hcntx data)
   (define result (make-bytes 16))
-  (define resultlen 16)
+  (HMAC_Init_ex hcntx #f 0 #f #f)
   (HMAC_Update hcntx data (bytes-length data))
-  (HMAC_Final  hcntx result resultlen)
+  (define resultlen (HMAC_Final hcntx result))
+  (printf "~a ~a\n" resultlen (bytes->hex-string result))
   result)
 
 (define/provide (encrypt-init ccntx ssh-name ec iv)
@@ -65,14 +75,14 @@
   (define rl (+ bl 16))
   (define result (make-bytes rl))
   (define resultlen rl)
-  (EVP_DecryptInit_ex ccntx #f #f #f iv)
+  (EVP_CipherInit_ex ccntx #f #f #f iv 0)
   (printf "DB1 ~a ~a ~a\n"
     (EVP_CIPHER_CTX_block_size ccntx)
     (EVP_CIPHER_CTX_key_length ccntx)
     (EVP_CIPHER_CTX_iv_length  ccntx))
 
   (printf "DB1 ~a ~a ~a ~a ~a\n" 0 (bytes->hex-string result) resultlen (bytes->hex-string buffer) bl)
-  (define-values (r rlo) (EVP_DecryptUpdate ccntx result buffer bl))
+  (define-values (r rlo) (EVP_CipherUpdate ccntx result buffer bl))
   (printf "DB1 ~a ~a ~a ~a ~a\n" r (bytes->hex-string result) rlo (bytes->hex-string buffer) bl)
   (subbytes result 0 16))
 
@@ -84,10 +94,10 @@
   (define result2 (make-bytes 32))
   (define resultlen2 32)
   (printf "DB2 ~a ~a ~a ~a ~a\n" 0 (bytes->hex-string result) resultlen (bytes->hex-string buffer) bl)
-  (define-values (r rlo) (EVP_DecryptUpdate ccntx result buffer bl))
+  (define-values (r rlo) (EVP_CipherUpdate ccntx result buffer bl))
   (printf "DB2 ~a ~a ~a ~a ~a\n" r (bytes->hex-string result) rlo (bytes->hex-string buffer) bl)
   (printf "DB3 ~a ~a ~a\n" 0 (bytes->hex-string result2) resultlen2)
-  (define-values (r2 rlo2) (EVP_DecryptFinal_ex ccntx result2))
+  (define-values (r2 rlo2) (EVP_CipherFinal_ex ccntx result2))
   (printf "DB3 ~a ~a ~a\n" r2 (bytes->hex-string result2) rlo2)
   (bytes-append (subbytes result 0 32)
                 (subbytes result2 0 0)))

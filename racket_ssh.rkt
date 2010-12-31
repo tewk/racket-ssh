@@ -26,17 +26,23 @@
   (bytes-append
   (bytes SSH_MSG_KEXINIT) 
   (random-bytes 16)
-  (build-ssh-bytes #"diffie-hellman-group-exchange-sha256,diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1")
-  ;(build-ssh-bytes #"diffie-hellman-group1-sha1")
-  (build-ssh-bytes #"ssh-rsa,ssh-dss")
+;  (build-ssh-bytes #"diffie-hellman-group-exchange-sha256,diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1")
+  (build-ssh-bytes #"diffie-hellman-group-exchange-sha1")
+;  (build-ssh-bytes #"diffie-hellman-group1-sha1")
+;  (build-ssh-bytes #"ssh-rsa,ssh-dss")
+  (build-ssh-bytes #"ssh-rsa")
 ;  (build-ssh-bytes #"aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,aes256-cbc,arcfour,rijndael-cbc@lysator.liu.se")
 ;  (build-ssh-bytes #"aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,aes256-cbc,arcfour,rijndael-cbc@lysator.liu.se")
   (build-ssh-bytes #"aes128-cbc")
   (build-ssh-bytes #"aes128-cbc")
-  (build-ssh-bytes #"hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96")
-  (build-ssh-bytes #"hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96")
-  (build-ssh-bytes #"none,zlib@openssh.com,zlib")
-  (build-ssh-bytes #"none,zlib@openssh.com,zlib")
+;  (build-ssh-bytes #"hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96")
+;  (build-ssh-bytes #"hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96")
+  (build-ssh-bytes #"hmac-md5")
+  (build-ssh-bytes #"hmac-md5")
+;  (build-ssh-bytes #"none,zlib@openssh.com,zlib")
+;  (build-ssh-bytes #"none,zlib@openssh.com,zlib")
+  (build-ssh-bytes #"none")
+  (build-ssh-bytes #"none")
   (build-ssh-bytes #"")
   (build-ssh-bytes #"")
   (bytes 0)
@@ -236,21 +242,24 @@
       (begin0
       (if hmac
         (let* ([prefix-size (max 4 16)]
-               [enc-prefix (read-bytes (max 4 16) in)]
+               [enc-prefix (read-bytes prefix-size in)]
                [prefix (decrypt-begin cipher-in enc-prefix recvIV)]
                [packet-len (integer-bytes->integer (subbytes prefix 0 4) #f #t)]
-               [enc-rest (read-bytes (- packet-len 12) in)]
+               [enc-rest (read-bytes (+ (- packet-len prefix-size) 4) in)]
                [rest (decrypt-rest cipher-in enc-rest)]
                [hmac (read-bytes hmaclen in)]
-               [pkt (bytes-append prefix rest)]
-               [comp-hmac (hmacit hmac-in (bytes-append recvInteg (->bytes (add1 recvcnt)) rest))])
+               [pkt (bytes-append rest)]
+               [hmac-data (bytes-append (->bytes recvcnt) rest)]
+               [comp-hmac (hmacit hmac-in hmac-data)])
          (printf "ENC RECV ~a ~a ~a\n" packet-len (bytes->hex-string enc-prefix) (bytes->hex-string enc-rest))
          (printf "ENC RECV ~a ~a ~a\n" packet-len (bytes->hex-string prefix) (bytes->hex-string rest))
+         (printf "P# ~a DATA ~a DATALEN ~a\n" recvcnt (bytes->hex-string hmac-data) (bytes-length hmac-data))
+         (printf "HMAC DOESNT MATCH TH ~a MI ~a\n" (bytes->hex-string hmac) (bytes->hex-string comp-hmac))
           (if (bytes=? hmac comp-hmac)
             pkt
             (begin 
+              (printf "P# ~a DATA ~a DATALEN ~a\n" recvcnt (bytes->hex-string hmac-data) (bytes-length hmac-data))
               (printf "HMAC DOESNT MATCH TH ~a MI ~a\n" (bytes->hex-string hmac) (bytes->hex-string comp-hmac))
-              (printf "~a ~a\n" prefix rest)
               pkt)))
         (let* ([prefix-size 4]
                [prefix (read-bytes prefix-size in)]
@@ -264,7 +273,7 @@
     (define/public (send-packet pkt)
       (if hmac
         (let ([b (hmacit hmac-out (bytes-append sendInteg (->bytes sentcnt) pkt))])
-          (printf "MD5 ~a ~a\n" sentcnt (bytes->hex-string b))
+          (printf "HMAC ~a ~a\n" sentcnt (bytes->hex-string b))
           (write-bytes (encrypt-all cipher-out pkt sendIV) out)
           (write-bytes b out)
           (updateSentIV pkt))
@@ -386,8 +395,9 @@
   ;    (printf "E   ~a ~a~n" (bytes-length client-e) (bytes->hex-string client-e))
   ;    (printf "PUB ~a~n" (bytes->hex-string pub))
   ;    (printf "SS  ~a~n" (bytes->hex-string ssh-shared-secret))
+      (define hasher->bin sha1->bin)
       (define exchange-hash 
-        (sha256->bin 
+        (hasher->bin
           (build-ssh-bytes (chomprn CLIENT_VERSION)) 
           (build-ssh-bytes (chomprn SERVER_VERSION))
           (build-ssh-bytes CLIENT_KEX_PAYLOAD)
@@ -410,16 +420,21 @@
 
       (printf "CLIENT SSH_MSG_NEWKEYS ~a~n" (bytes->hex-string (recv-packet)))
       (define session_id exchange-hash)
-      (define DIV (sha256->bin ssh-shared-secret exchange-hash #"A" session_id))
-      (define DEC (sha256->bin ssh-shared-secret exchange-hash #"C" session_id))
-      (define DInteg (sha256->bin ssh-shared-secret exchange-hash #"E" session_id))
-      (define EIV (sha256->bin ssh-shared-secret exchange-hash #"B" session_id))
-      (define EEC (sha256->bin ssh-shared-secret exchange-hash #"D" session_id))
-      (define EInteg (sha256->bin ssh-shared-secret exchange-hash #"F" session_id))
+      (define DIV (hasher->bin ssh-shared-secret exchange-hash #"A" session_id))
+      (define DEC (hasher->bin ssh-shared-secret exchange-hash #"C" session_id))
+      (define DInteg (hasher->bin ssh-shared-secret exchange-hash #"E" session_id))
+      (define EIV (hasher->bin ssh-shared-secret exchange-hash #"B" session_id))
+      (define EEC (hasher->bin ssh-shared-secret exchange-hash #"D" session_id))
+      (define EInteg (hasher->bin ssh-shared-secret exchange-hash #"F" session_id))
+      (printf "client HMAC KEY ~a\n" (bytes->hex-string DInteg))
       (send-buffer (bytes SSH_MSG_NEWKEYS))
       (send io hmac-on shared-secret session_id EIV EEC EInteg DIV DEC DInteg)
 
-      (printf "~a\n" (read-ssh-string (open-input-bytes (recv-packet)))))
+      (define ppp (recv-packet))
+      (printf "~a\n" (bytes->hex-string ppp))
+      (define pp (open-input-bytes ppp))
+      (printf "~a ~a\n" (read-byte pp) (read-ssh-string pp)))
+;      (printf "~a\n" (read-ssh-string (open-input-bytes (recv-packet)))))
     (super-new)))
 
 (match (current-command-line-arguments)
