@@ -16,13 +16,12 @@
 (define (->int32 x) (integer-bytes->integer x #f #t))
 
 (define (read-ssh-string in)
-  (define len (integer-bytes->integer (read-bytes 4 in) #f #t))
+  (define len (->int32 (read-bytes 4 in)))
   (define data (read-bytes len in))
-;  (eprintf "SSHSTR: ~a~n" len)
   data)
 
 (define (read-ssh-bool in) (if (= 0 (read-byte in)) #f #t))
-(define (read-ssh-uint32 in) (integer-bytes->integer (read-bytes 4 in) #f #t))
+(define (read-ssh-uint32 in) (->int32 (read-bytes 4 in)))
 (define (random-bytes cnt) (apply bytes (for/list ([x (in-range cnt)]) (random 256))))
 
 (define (bytes-join strs sep)
@@ -71,7 +70,7 @@
   (build-ssh-bytes #"")
   (build-ssh-bytes #"")
   (bytes 0)
-  (integer->integer-bytes 0 4 #t)))
+  (->bytes 0)))
   (values pkt algorithms))
 
 (define (parse-kexinit bytes)
@@ -157,6 +156,7 @@
 (define SSH_MSG_USERAUTH_FAILURE                51) 
 (define SSH_MSG_USERAUTH_SUCCESS                52) 
 (define SSH_MSG_USERAUTH_BANNER                 53) 
+(define SSH_MSG_USERAUTH_PK_OK                  60)
 (define SSH_MSG_GLOBAL_REQUEST                  80) 
 (define SSH_MSG_REQUEST_SUCCESS                 81) 
 (define SSH_MSG_REQUEST_FAILURE                 82) 
@@ -183,15 +183,21 @@
     (field (hmac (make-hmac)))
     (field (hmaclen 0))
     (field (cipher-block-size 0))
+    (field (min-pad 8))
     (field (ivlen 0))
     (field (keylen 0))
     (field (IV null))
     (field (pktcnt 0))
 
     (define/public (init cname hname iv KEY INTEG)
-      (set! cipher-block-size (cipher-init cipher cname KEY iv (if (eq? dir 'out) 1 0)))
-      (set! hmaclen (hmac-init hmac hname INTEG))
+      (define-values (crc bs kl ivl) (cipher-init cipher cname KEY iv (if (eq? dir 'out) 1 0)))
+      (define-values (hrc hs hbs) (hmac-init hmac hname INTEG))
       (set! IV iv)
+      (set! cipher-block-size bs)
+      (set! min-pad (max 8 bs))
+      (set! keylen kl)
+      (set! ivlen ivl)
+      (set! hmaclen hs)
       (set! on #t))
     
     (define/public (send-raw lst)
@@ -207,7 +213,7 @@
     (define (updateIV new)
       (let* ([b (bytes-append IV new)]
              [bl (bytes-length b)])
-        (set! IV (subbytes b (- bl cipher-block-size) bl))))
+        (set! IV (subbytes b (- bl ivlen) bl))))
 
     (define (calc-hmac pkt)
       (hmacit hmac (bytes-append (->bytes pktcnt) pkt)))
@@ -216,21 +222,22 @@
       (define buf (->bytes buffer))
       (define blen (bytes-length buf))
       (define initial-total-len (+ 4 1 blen))
-      (define ipadding-len (- 8 (modulo initial-total-len 8)))
-      (define padding-len (if (ipadding-len . < . 4) (+ ipadding-len 8) ipadding-len))
+      (define ipadding-len (- min-pad (modulo initial-total-len min-pad)))
+      (define padding-len (if (ipadding-len . < . 4) (+ ipadding-len min-pad) ipadding-len))
       (define packet-length (+ 1 blen padding-len))
+      ;Smaller than 16 byte packet case not implemented 
       (define type (bytes-ref buffer 0))
       (eprintf "SENT PKT: type ~a pktlen: ~a padding ~a datalen ~a\n" type packet-length padding-len blen)
       ;(eprintf "~a\n" (bytes->hex-string buf))
       (bytes-append
-        (integer->integer-bytes packet-length 4 #f #t)
+        (->bytes packet-length)
         (bytes padding-len)
         buf
         (random-bytes padding-len)))
 
     (define/public (parse-packet buffer)
       (define in (open-input-bytes buffer))
-      (define packet-len (integer-bytes->integer (read-bytes 4 in) #f #t))
+      (define packet-len (read-ssh-uint32 in))
       (define padding-len (read-byte in))
       (define data-len (- packet-len 1 padding-len))
       (define data (read-bytes data-len in))
@@ -251,15 +258,18 @@
       (unless (eq? dir 'in) (error "Attempting INPUT on OUTPUT stream"))
       (begin0
         (if on
-          (let* ([prefix-size (max 4 16)]
-                 [enc-prefix (read-bytes prefix-size s)]
-                 [prefix (decrypt-begin cipher enc-prefix IV)]
-                 [packet-len (->int32 (subbytes prefix 0 4))]
-                 [enc-rest (read-bytes (+ (- packet-len prefix-size) 4) s)]
-                 [rest (decrypt-rest cipher enc-rest)]
-                 [hmacin (read-bytes hmaclen s)]
-                 [pkt (bytes-append prefix rest)]
-            (updateIV pkt))
+          (let ()
+            (define prefix-size (max 4 cipher-block-size))
+            (define enc-prefix (read-bytes prefix-size s))  
+            (define prefix (decrypt-begin cipher enc-prefix IV))
+            (define packet-len (->int32 (subbytes prefix 0 4)))
+            (when (packet-len . > . 1024) (error "PACKET TO LONG"))
+            (printf "RECV PKT LENGTH ~a\n" packet-len)
+            (define enc-rest (read-bytes (+ (- packet-len prefix-size) 4) s))
+            (define rest (decrypt-rest cipher enc-rest))
+            (define hmacin (read-bytes hmaclen s))
+            (define pkt (bytes-append prefix rest))
+            (updateIV (bytes-append enc-prefix enc-rest))
             (unless (bytes=? hmacin (calc-hmac pkt)) (error "HMACS dont match"))
             pkt)
           (let* ([prefix-size 4]
@@ -274,10 +284,11 @@
     (define/public (send-packet pkt)
       (unless (eq? dir 'out) (error "Attempting OUTPUT on INPUT stream"))
       (if on
-        (begin
-          (write-bytes (encrypt-all cipher pkt IV) s)
+        (let ()
+          (define enc-data (encrypt-all cipher pkt IV))
+          (write-bytes enc-data s)
           (write-bytes (calc-hmac pkt) s)
-          (updateIV pkt))
+          (updateIV enc-data))
         (write-bytes pkt s))
       (flush-output s)
       (incrpktcnt))
@@ -452,7 +463,6 @@
 (define (do-key-exchange io handshake algorithms role)
   (define kexalg (third algorithms))
   (define (e) (error (format "key exchange algorithm ~a not supported" kexalg)))
-  (printf "XX~aXX V~aV\n" kexalg (bytes? kexalg))
   (cond
     [(bytes=? kexalg #"diffie-hellman-group-exchange-sha256") (diffie-hellman-group-exchange io handshake algorithms sha256->bin role)]
     [(bytes=? kexalg #"diffie-hellman-group-exchange-sha1") (diffie-hellman-group-exchange io handshake algorithms sha1->bin role)]
@@ -494,8 +504,38 @@
       (send-pkt (bytes-append 
         (bytes SSH_MSG_SERVICE_ACCEPT) 
         (build-ssh-bytes "ssh-userauth")))
-      (gp)
-)
+
+      (define ua1 (recv-pkt))
+      (define uain (open-input-bytes ua1))
+      (define uaid (read-byte uain))
+      (define user (read-ssh-string uain))
+      (define serv (read-ssh-string uain))
+      (define type (read-ssh-string uain))
+      (define bool (read-ssh-bool uain))
+      (define algo (read-ssh-string uain))
+      (define keyy (read-ssh-string uain))
+
+      (printf "~a ~a ~a ~a ~a ~a\n~a\n" uaid user serv type bool algo (bytes->hex-string keyy))
+      (send-pkt (bytes-append 
+        (bytes SSH_MSG_USERAUTH_PK_OK) 
+        (build-ssh-bytes algo)
+        (build-ssh-bytes keyy)))
+
+(let ()
+      (define ua1 (recv-pkt))
+      (define uain (open-input-bytes ua1))
+      (define uaid (read-byte uain))
+      (define user (read-ssh-string uain))
+      (define serv (read-ssh-string uain))
+      (define type (read-ssh-string uain))
+      (define bool (read-ssh-bool uain))
+      (define algo (read-ssh-string uain))
+      (define keyy (read-ssh-string uain))
+      (define sign (read-ssh-string uain))
+      (printf "~a ~a ~a ~a ~a ~a\n~a\n" uaid user serv type bool algo (bytes->hex-string keyy)))
+
+      (send-pkt (bytes-append (bytes SSH_MSG_USERAUTH_SUCCESS)))
+      (gp))
     
     (super-new)))
 

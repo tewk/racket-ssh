@@ -141,7 +141,8 @@
 
 (define-crypto-func EVP_MD_CTX_copy_ex  (_fun _EVP_MD_CTX-pointer _EVP_MD_CTX-pointer -> _int))
 (define-crypto-func EVP_MD_CTX_copy     (_fun _EVP_MD_CTX-pointer _EVP_MD_CTX-pointer -> _int))
-
+(define-crypto-func EVP_MD_block_size   (_fun _EVP_MD-pointer -> _int))
+(define-crypto-func EVP_MD_size         (_fun _EVP_MD-pointer -> _int))
 ; #define EVP_MAX_MD_SIZE (16+20) /* The SSLv3 md5+sha1 type */
 
 ; #define EVP_MD_type(e)                 ((e)->type)

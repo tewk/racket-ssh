@@ -55,8 +55,11 @@
   c)
 
 (define/provide (hmac-init hcntx ssh-name key)
-  (HMAC_Init_ex hcntx (subbytes key 0 16) 16 ((ssh-name->hmac ssh-name)) #f)
-  16)
+  (define evp ((ssh-name->hmac ssh-name)))
+  (define size (EVP_MD_size evp))
+  (define block_size (EVP_MD_block_size evp))
+  (define rc (HMAC_Init_ex hcntx (subbytes key 0 size) size evp #f))
+  (values rc size block_size))
 
 (define/provide (hmacit hcntx data)
   (define result (make-bytes 16))
@@ -66,9 +69,9 @@
   result)
 
 (define/provide (cipher-init ccntx ssh-name ec iv en/de)
-  (EVP_CipherInit_ex ccntx ((ssh-name->cipher ssh-name)) #f ec iv en/de)
+  (define rc (EVP_CipherInit_ex ccntx ((ssh-name->cipher ssh-name)) #f ec iv en/de))
   (EVP_CIPHER_CTX_set_padding ccntx 0)
-  32)
+  (values rc (EVP_CIPHER_CTX_block_size ccntx) (EVP_CIPHER_CTX_key_length ccntx) (EVP_CIPHER_CTX_iv_length ccntx)))
 
 (define/provide (decrypt-begin ccntx buffer iv)
   (define bl (bytes-length buffer))
