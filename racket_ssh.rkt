@@ -1,6 +1,7 @@
 #lang racket
 (require "ssh_openssl.rkt")
-
+(require racket/pretty)
+ 
 (define (->bytes x)
   (cond [(string? x) (string->bytes/locale x)]
         [(bytes? x) x]
@@ -12,6 +13,8 @@
     (->bytes (bytes-length byte-data))
     byte-data))
 
+(define (->int32 x) (integer-bytes->integer x #f #t))
+
 (define (read-ssh-string in)
   (define len (integer-bytes->integer (read-bytes 4 in) #f #t))
   (define data (read-bytes len in))
@@ -22,42 +25,65 @@
 (define (read-ssh-uint32 in) (integer-bytes->integer (read-bytes 4 in) #f #t))
 (define (random-bytes cnt) (apply bytes (for/list ([x (in-range cnt)]) (random 256))))
 
+(define (bytes-join strs sep)
+  (cond [(not (and (list? strs) (andmap bytes? strs)))
+         (raise-type-error 'bytes-join "list-of-byte-strings" strs)]
+        [(not (bytes? sep))
+         (raise-type-error 'bytes-join "bytes" sep)]
+        [(null? strs) #""]
+        [(null? (cdr strs)) (car strs)]
+        [else (apply bytes-append (add-between strs sep))]))
+
 (define (build-kexinit)
-  (bytes-append
+  (define algorithms (list 
+    (list #"diffie-hellman-group-exchange-sha1")
+    (list #"ssh-rsa")
+    (list #"aes128-cbc")
+    (list #"aes128-cbc")
+    (list #"hmac-md5")
+    (list #"hmac-md5")
+    (list #"none")
+    (list #"none")))
+  (define pkt (bytes-append
   (bytes SSH_MSG_KEXINIT) 
   (random-bytes 16)
 ;  (build-ssh-bytes #"diffie-hellman-group-exchange-sha256,diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1")
-  (build-ssh-bytes #"diffie-hellman-group-exchange-sha1")
 ;  (build-ssh-bytes #"diffie-hellman-group1-sha1")
 ;  (build-ssh-bytes #"ssh-rsa,ssh-dss")
+;  (build-ssh-bytes #"aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,aes256-cbc,arcfour,rijndael-cbc@lysator.liu.se")
+;  (build-ssh-bytes #"aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,aes256-cbc,arcfour,rijndael-cbc@lysator.liu.se")
+;  (build-ssh-bytes #"hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96")
+;  (build-ssh-bytes #"hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96")
+;  (build-ssh-bytes #"none,zlib@openssh.com,zlib")
+;  (build-ssh-bytes #"none,zlib@openssh.com,zlib")
+  (for/fold ([accum #""]) ([x algorithms])
+    (bytes-append accum (build-ssh-bytes (bytes-join x #","))))
+#|
+  (build-ssh-bytes #"diffie-hellman-group-exchange-sha1")
   (build-ssh-bytes #"ssh-rsa")
-;  (build-ssh-bytes #"aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,aes256-cbc,arcfour,rijndael-cbc@lysator.liu.se")
-;  (build-ssh-bytes #"aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,aes256-cbc,arcfour,rijndael-cbc@lysator.liu.se")
   (build-ssh-bytes #"aes128-cbc")
   (build-ssh-bytes #"aes128-cbc")
-;  (build-ssh-bytes #"hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96")
-;  (build-ssh-bytes #"hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96")
   (build-ssh-bytes #"hmac-md5")
   (build-ssh-bytes #"hmac-md5")
-;  (build-ssh-bytes #"none,zlib@openssh.com,zlib")
-;  (build-ssh-bytes #"none,zlib@openssh.com,zlib")
   (build-ssh-bytes #"none")
   (build-ssh-bytes #"none")
+|#
   (build-ssh-bytes #"")
   (build-ssh-bytes #"")
   (bytes 0)
   (integer->integer-bytes 0 4 #t)))
+  (values pkt algorithms))
 
 (define (parse-kexinit bytes)
   (define in (open-input-bytes bytes))
   (define type (read-byte in))
   (define cookie (read-bytes 16 in))
-  (define lines (for/list ([x (in-range 9)]) (read-ssh-string in)))
-  (define r1 (read-ssh-string in))
+  (define lines (for/list ([x (in-range 10)]) (read-ssh-string in)))
   (define first-kex-pkt (read-ssh-bool in))
   (define future-use (read-ssh-uint32 in))
-  (eprintf "KEXINIT PACKET: ~a ~a ~a~n" type (bytes->hex-string cookie) first-kex-pkt)
-  (for ([x lines]) (eprintf "~a~n" x)))
+  (for/list ([x lines]) 
+    (eprintf "~a~n" x)
+    (regexp-split #rx"," x)))
 ;      byte         SSH_MSG_KEXINIT
 ;      byte[16]     cookie (random bytes)
 ;      name-list    kex_algorithms
@@ -123,10 +149,10 @@
 (define SSH_MSG_NEWKEYS                         21) 
 (define KEXDH_INIT                              30) 
 (define KEXDH_REPLY                             31) 
-(define KEXDH_GEX_GROUP    31)
-(define KEXDH_GEX_INIT     32)
-(define KEXDH_GEX_REPLY    33)
-(define KEXDH_GEX_REQUEST  34)
+(define KEXDH_GEX_GROUP                         31)
+(define KEXDH_GEX_INIT                          32)
+(define KEXDH_GEX_REPLY                         33)
+(define KEXDH_GEX_REQUEST                       34)
 (define SSH_MSG_USERAUTH_REQUEST                50) 
 (define SSH_MSG_USERAUTH_FAILURE                51) 
 (define SSH_MSG_USERAUTH_SUCCESS                52) 
@@ -146,61 +172,45 @@
 (define SSH_MSG_CHANNEL_SUCCESS                 99) 
 (define SSH_MSG_CHANNEL_FAILURE                100) 
 
-(define (dbuffer data)
-  (write data)
-  (newline)
-  (write (apply bytes-append (for/list ([x (in-bytes data)])
-                               (case x
-                                 [(10 13) (bytes x)]
-                                 [else (bytes x 32)]))))
-  (newline)
-  (write (string->bytes/locale (bytes->hex-string data)))
-  (newline))
 (define (say x) (printf "~a~n" x) x)
 
-(define ssh-transport
+(define ssh-stream
   (class object%
-    (init-field (in null)
-                (out null))
-    (field (cipher-in (make-cipher)))
-    (field (cipher-out (make-cipher)))
-    (field (hmac-in (make-hmac)))
-    (field (hmac-out (make-hmac)))
-    (field (hmac #f))
-    (field (hmaclen 16))
-    (field (cipher-block-size 16))
-    (field (shared-secret null))
-    (field (sendIV null))
-    (field (recvIV null))
-    (field (sendInteg null))
-    (field (recvInteg null))
-    (field (sentcnt 0))
-    (field (recvcnt 0))
+    (init-field (s null))
+    (init-field (dir 0))
+    (field (on #f))
+    (field (cipher (make-cipher)))
+    (field (hmac (make-hmac)))
+    (field (hmaclen 0))
+    (field (cipher-block-size 0))
+    (field (ivlen 0))
+    (field (keylen 0))
+    (field (IV null))
+    (field (pktcnt 0))
 
-    (define/public (hmac-on shared-secret session_id EIV EEC EInteg DIV DEC DInteg)
-      (set! sendIV EIV)
-      (set! recvIV DIV)
-      (set! sendInteg EInteg)
-      (set! recvInteg DInteg)
-      (encrypt-init cipher-out "aes-128" EEC EIV)
-      (decrypt-init cipher-in  "aes-128" DEC DIV)
-      (hmac-init hmac-out "md5" EInteg)
-      (hmac-init hmac-in  "md5" DInteg)
-      (set! hmac #t))
+    (define/public (init cname hname iv KEY INTEG)
+      (set! cipher-block-size (cipher-init cipher cname KEY iv (if (eq? dir 'out) 1 0)))
+      (set! hmaclen (hmac-init hmac hname INTEG))
+      (set! IV iv)
+      (set! on #t))
+    
+    (define/public (send-raw lst)
+      (for ([x lst]) (write-bytes x s))
+      (flush-output s))
 
-    (define/public (send-raw-bytes x)
-      (write-bytes x out)
-      (flush-output out))
-    ;  (set! sentcnt (+ sentcnt 1)))
+    (define/public (readline)
+      (read-line s))
 
-    (define (updateIV ivv)
-      (lambda (iv)
-        (set! ivv (let* ([b (bytes-append ivv iv)]
-                         [bl (bytes-length b)])
-                    (subbytes b (- bl cipher-block-size) bl)))))
+    (define (incrpktcnt) 
+      (set! pktcnt (+ pktcnt 1)))
 
-    (define updateSentIV (updateIV sendIV))
-    (define updateRecvIV (updateIV sendIV))
+    (define (updateIV new)
+      (let* ([b (bytes-append IV new)]
+             [bl (bytes-length b)])
+        (set! IV (subbytes b (- bl cipher-block-size) bl))))
+
+    (define (calc-hmac pkt)
+      (hmacit hmac (bytes-append (->bytes pktcnt) pkt)))
 
     (define (build-packet buffer)
       (define buf (->bytes buffer))
@@ -227,7 +237,6 @@
       (define padding (read-bytes padding-len in))
       (define type (bytes-ref data 0))
       (eprintf "RECV PKT: type ~a pktlen: ~a padding ~a datalen ~a~n" type packet-len padding-len data-len)
-      ;(eprintf "~a\n" (bytes->hex-string data))
       (when (= type 1)
         (define in (open-input-bytes data))
         (define type (read-byte in))
@@ -239,75 +248,70 @@
 
     (define/public (recv-parse-packet) (parse-packet (recv-packet)))
     (define/public (recv-packet)
+      (unless (eq? dir 'in) (error "Attempting INPUT on OUTPUT stream"))
       (begin0
-      (if hmac
-        (let* ([prefix-size (max 4 16)]
-               [enc-prefix (read-bytes prefix-size in)]
-               [prefix (decrypt-begin cipher-in enc-prefix recvIV)]
-               [packet-len (integer-bytes->integer (subbytes prefix 0 4) #f #t)]
-               [enc-rest (read-bytes (+ (- packet-len prefix-size) 4) in)]
-               [rest (decrypt-rest cipher-in enc-rest)]
-               [hmac (read-bytes hmaclen in)]
-               [pkt (bytes-append rest)]
-               [hmac-data (bytes-append (->bytes recvcnt) rest)]
-               [comp-hmac (hmacit hmac-in hmac-data)])
-         (printf "ENC RECV ~a ~a ~a\n" packet-len (bytes->hex-string enc-prefix) (bytes->hex-string enc-rest))
-         (printf "ENC RECV ~a ~a ~a\n" packet-len (bytes->hex-string prefix) (bytes->hex-string rest))
-         (printf "P# ~a DATA ~a DATALEN ~a\n" recvcnt (bytes->hex-string hmac-data) (bytes-length hmac-data))
-         (printf "HMAC DOESNT MATCH TH ~a MI ~a\n" (bytes->hex-string hmac) (bytes->hex-string comp-hmac))
-          (if (bytes=? hmac comp-hmac)
-            pkt
-            (begin 
-              (printf "P# ~a DATA ~a DATALEN ~a\n" recvcnt (bytes->hex-string hmac-data) (bytes-length hmac-data))
-              (printf "HMAC DOESNT MATCH TH ~a MI ~a\n" (bytes->hex-string hmac) (bytes->hex-string comp-hmac))
-              pkt)))
-        (let* ([prefix-size 4]
-               [prefix (read-bytes prefix-size in)]
-               [packet-len (integer-bytes->integer prefix #f #t)]
-               [rest (read-bytes packet-len in)]
-               [pkt (bytes-append prefix rest)])
-          pkt))
-      (set! recvcnt (+ recvcnt 1))))
+        (if on
+          (let* ([prefix-size (max 4 16)]
+                 [enc-prefix (read-bytes prefix-size s)]
+                 [prefix (decrypt-begin cipher enc-prefix IV)]
+                 [packet-len (->int32 (subbytes prefix 0 4))]
+                 [enc-rest (read-bytes (+ (- packet-len prefix-size) 4) s)]
+                 [rest (decrypt-rest cipher enc-rest)]
+                 [hmacin (read-bytes hmaclen s)]
+                 [pkt (bytes-append prefix rest)]
+            (updateIV pkt))
+            (unless (bytes=? hmacin (calc-hmac pkt)) (error "HMACS dont match"))
+            pkt)
+          (let* ([prefix-size 4]
+                 [prefix (read-bytes prefix-size s)]
+                 [packet-len (->int32 prefix)]
+                 [rest (read-bytes packet-len s)]
+                 [pkt (bytes-append prefix rest)])
+            pkt))
+        (incrpktcnt)))
 
     (define/public (send-build-packet buffer) (send-packet (build-packet buffer)))
     (define/public (send-packet pkt)
-      (if hmac
-        (let ([b (hmacit hmac-out (bytes-append sendInteg (->bytes sentcnt) pkt))])
-          (printf "HMAC ~a ~a\n" sentcnt (bytes->hex-string b))
-          (write-bytes (encrypt-all cipher-out pkt sendIV) out)
-          (write-bytes b out)
-          (updateSentIV pkt))
-        (write-bytes pkt out))
-      (flush-output out)
-      (set! sentcnt (+ sentcnt 1)))
+      (unless (eq? dir 'out) (error "Attempting OUTPUT on INPUT stream"))
+      (if on
+        (begin
+          (write-bytes (encrypt-all cipher pkt IV) s)
+          (write-bytes (calc-hmac pkt) s)
+          (updateIV pkt))
+        (write-bytes pkt s))
+      (flush-output s)
+      (incrpktcnt))
 
+    (super-new)))
+
+(define ssh-transport
+  (class object%
+    (init (in null)
+          (out null))
+    (init-field (role null))
+    (field (ins (new ssh-stream  [s in] [dir 'in])))
+    (field (outs (new ssh-stream [s out] [dir 'out])))
+  
+    (define/public (send-raw . x) (send outs send-raw x))
+    (define/public (read-line)  (send ins readline))
+    (define/public (send-packet x) (send outs send-build-packet x))
+    (define/public (recv-packet) (send ins recv-parse-packet))
+    (define/public (get-CS-SC) (if (eq? role 'server) (values ins outs) (values outs ins)))
     (super-new)))
 
 (define ssh
   (class object%
-    (init-field (host "localhost") (port 2224))
     (field (io null))
-    (define/public (send-buffer x)
-      (send io send-build-packet x))
-    (define/public (send-raw x)
-      (send io send-raw-bytes x))
-    (define/public (recv-packet)
-      (send io recv-parse-packet))
     (define/public (connect host port)
+      (define role 'server)
       (define-values (in out) (tcp-connect "localhost" 2224))
       (set! io (new ssh-transport (in in) (out out)))
 
+      (define handshake (do-handshake io role))
+      (define algs (algorithm-negotiation io role))
+      (do-key-exchange io handshake algs role)
 
-      (define SERVER_VERSION (read-line in))
-      (printf "SERVER: ~a\n" SERVER_VERSION)
-      (define CLIENT_VERSION #"SSH-2.0-RacketSSH_0.1p0 Racket5.0\r\n")
-      (send-raw CLIENT_VERSION)
-
-      (define CLIENT_KEX_PAYLOAD (build-kexinit))
-      (send-buffer CLIENT_KEX_PAYLOAD)
-      (define SERVER_KEX_PAYLOAD (recv-packet))
-      (parse-kexinit SERVER_KEX_PAYLOAD)
-
+#|
       ;DH-GROUP_EXECH
       (let ([b (bytes-append (bytes KEXDH_GEX_REQUEST) (->bytes 1024) (->bytes 1024) (->bytes 8192))])
         ;(printf "~a\n" (bytes->hex-string b))
@@ -322,10 +326,7 @@
             (let-values ([(shared-secret) (DiffieHellman-get-shared-secret dh server-pub-key)])
             (printf "~a~n" (bytes->hex-string (recv-packet)))
             (send-buffer (bytes SSH_MSG_NEWKEYS))))))
-    
-;IV (sha256->bin shared-secret #"A" session_id) 
-;EC (sha256->bin shared-secret #"C" session_id) 
-;Integ (sha256->bin shared-secret #"E" session_id) 
+|#  
 
       (send io hmac-on))
  
@@ -350,26 +351,12 @@
                                          (digit c2)))))
     bstr2))
 
-(define sshd
-  (class object%
-    (init-field (host "localhost") (port 22))
-    (field (io null))
-    (define/public (send-buffer x) (send io send-build-packet x))
-    (define/public (send-raw x)    (send io send-raw-bytes x))
-    (define/public (recv-packet)   (send io recv-parse-packet))
-    (define/public (listen)
-      (define-values (in out) (tcp-accept (tcp-listen 2222 4 #t)))
-      (set! io (new ssh-transport (in in) (out out)))
-      (define SERVER_VERSION #"SSH-2.0-RacketSSH_0.1p0 Racket5.0\r\n")
-      (send-raw SERVER_VERSION)
-      (define CLIENT_VERSION (read-line in))
-      (printf "CLIENT: ~a\n" CLIENT_VERSION)
-
-      (define SERVER_KEX_PAYLOAD (build-kexinit))
-      (send-buffer SERVER_KEX_PAYLOAD)
-      (define CLIENT_KEX_PAYLOAD (recv-packet))
-      (parse-kexinit CLIENT_KEX_PAYLOAD)
-
+(define (curry-io io)
+  (values (lambda (x) (send io send-packet x)) (lambda () (send io recv-packet))))
+(define (diffie-hellman-group-exchange io handshake algorithms hasher->bin role)
+      (define-values (send-pkt recv-pkt) (curry-io io))
+      (match-define (list client-version server-version) handshake)
+      (match-define (list client-kex-payload server-kex-payload kex-alg pub-priv-alg client-sym server-sym client-hmac server-hmac client-comp server-comp) algorithms)
       (define p (hex-bytes->bytes (bytes-append
 #"00FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"
 #"29024E088A67CC74020BBEA63B139B22514A08798E3404DD"
@@ -387,21 +374,17 @@
       (define sshg (build-ssh-bytes g))
       (define public-host-key-blob (ssh-host-public-file->blob "/home/tewk/.ssh/rktsshhost.pub"))
       (define (chomprn x) (regexp-replace "\r$" (regexp-replace "\n$" (regexp-replace "\r\n$" x "") "") ""))
-      (define-values (bmin bm bmax) (parse-dh-group-exch-req (recv-packet)))
-      (send-buffer (bytes-append (bytes KEXDH_GEX_GROUP) sshp sshg))
-      (define-values (client-e) (parse-dh-group-exch-init (recv-packet)))
+      (define-values (bmin bm bmax) (parse-dh-group-exch-req (recv-pkt))) ;  S <- C
+      (send-pkt (bytes-append (bytes KEXDH_GEX_GROUP) sshp sshg))         ;  S -> C
+      (define-values (client-e) (parse-dh-group-exch-init (recv-pkt)))    ;  S <- C
       (define-values (dh pub shared-secret) (DiffieHellmanGroup14-get-shared-secret client-e))
       (define ssh-shared-secret (build-ssh-bin shared-secret))
-  ;    (printf "E   ~a ~a~n" (bytes-length client-e) (bytes->hex-string client-e))
-  ;    (printf "PUB ~a~n" (bytes->hex-string pub))
-  ;    (printf "SS  ~a~n" (bytes->hex-string ssh-shared-secret))
-      (define hasher->bin sha1->bin)
       (define exchange-hash 
         (hasher->bin
-          (build-ssh-bytes (chomprn CLIENT_VERSION)) 
-          (build-ssh-bytes (chomprn SERVER_VERSION))
-          (build-ssh-bytes CLIENT_KEX_PAYLOAD)
-          (build-ssh-bytes SERVER_KEX_PAYLOAD)
+          (build-ssh-bytes (chomprn client-version))
+          (build-ssh-bytes (chomprn server-version))
+          (build-ssh-bytes client-kex-payload)
+          (build-ssh-bytes server-kex-payload)
           (build-ssh-bytes public-host-key-blob)
           (->bytes bmin) (->bytes bm) (->bytes bmax) 
           sshp 
@@ -410,33 +393,113 @@
           pub
           ssh-shared-secret))
       (define signature (sha1-rsa-signature/fn "/home/tewk/.ssh/rktsshhost" exchange-hash))
-      (send-buffer (bytes-append 
+      (send-pkt (bytes-append 
         (bytes KEXDH_GEX_REPLY) 
         (build-ssh-bytes public-host-key-blob)
         pub
         (build-ssh-bytes (bytes-append (build-ssh-bytes #"ssh-rsa") (build-ssh-bytes signature)))))
 
+      (send-pkt (bytes SSH_MSG_NEWKEYS))
+      (unless (= (bytes-ref (recv-pkt) 0) SSH_MSG_NEWKEYS) (error "Expected SSH_MSG_NEWKEYS"))
 
-
-      (printf "CLIENT SSH_MSG_NEWKEYS ~a~n" (bytes->hex-string (recv-packet)))
       (define session_id exchange-hash)
-      (define DIV (hasher->bin ssh-shared-secret exchange-hash #"A" session_id))
-      (define DEC (hasher->bin ssh-shared-secret exchange-hash #"C" session_id))
-      (define DInteg (hasher->bin ssh-shared-secret exchange-hash #"E" session_id))
-      (define EIV (hasher->bin ssh-shared-secret exchange-hash #"B" session_id))
-      (define EEC (hasher->bin ssh-shared-secret exchange-hash #"D" session_id))
-      (define EInteg (hasher->bin ssh-shared-secret exchange-hash #"F" session_id))
-      (printf "client HMAC KEY ~a\n" (bytes->hex-string DInteg))
-      (send-buffer (bytes SSH_MSG_NEWKEYS))
-      (send io hmac-on shared-secret session_id EIV EEC EInteg DIV DEC DInteg)
 
-      (define ppp (recv-packet))
-      (printf "~a\n" (bytes->hex-string ppp))
+      (define (setup-encrypted-streams ccipher chmac scipher shmac ssh-shared-secret exchange-hash session_id hasher->bin s/c)
+        (define (gen k) (hasher->bin ssh-shared-secret exchange-hash k session_id))
+        (define-values (C->S S->C) (send io get-CS-SC))
+        (send C->S init ccipher chmac (gen #"A") (gen #"C") (gen #"E"))
+        (send S->C init scipher shmac (gen #"B") (gen #"D") (gen #"F")))
+
+      (setup-encrypted-streams client-sym client-hmac server-sym server-hmac ssh-shared-secret exchange-hash session_id hasher->bin role)
+)
+
+(define (server? x) (eq? x 'server))
+(define (do-handshake io role)
+  (define RACKET-SSH-VERSION #"SSH-2.0-RacketSSH_0.1p0 Racket5.0")
+  (send io send-raw RACKET-SSH-VERSION #"\r\n")
+  (define PEER-VERSION (send io read-line))
+
+  (define-values (SERVER_VERSION CLIENT_VERSION)
+    (if (server? role) 
+      (values RACKET-SSH-VERSION PEER-VERSION)
+      (values PEER-VERSION RACKET-SSH-VERSION)))
+  (printf "SERVER: ~a\n" SERVER_VERSION)
+  (printf "CLIENT: ~a\n" CLIENT_VERSION)
+  (list CLIENT_VERSION SERVER_VERSION))
+
+(define (algorithm-negotiation io role)
+  (define-values (send-pkt recv-pkt) (curry-io io))
+  (define-values (OUR_KEX_PAYLOAD OUR_ALGORITHMS) (build-kexinit))
+  (send-pkt OUR_KEX_PAYLOAD)
+  (define PEER_KEX_PAYLOAD (recv-pkt))
+  (define PEER_ALGORITHMS  (parse-kexinit PEER_KEX_PAYLOAD))
+  (define-values (SERVER_KEX_PAYLOAD SERVER_ALGORITHMS CLIENT_KEX_PAYLOAD CLIENT_ALGORITHMS)
+    (if (server? role) 
+      (values OUR_KEX_PAYLOAD OUR_ALGORITHMS PEER_KEX_PAYLOAD PEER_ALGORITHMS)
+      (values PEER_KEX_PAYLOAD PEER_ALGORITHMS OUR_KEX_PAYLOAD OUR_ALGORITHMS)))
+  (cons CLIENT_KEX_PAYLOAD (cons SERVER_KEX_PAYLOAD (negotiate SERVER_ALGORITHMS CLIENT_ALGORITHMS))))
+
+(define (list->hash-keys lst val)
+  (make-hash (map (lambda (x) (cons x x)) lst)))
+
+(define (negotiate sa ca)
+  (for/list ([cs ca]
+             [ss sa])
+    (define nv (for/or ([c cs]) (if (member c ss) c #f)))
+    (unless nv (error "failed algorithm negotiation"))
+    nv))
+
+(define (do-key-exchange io handshake algorithms role)
+  (define kexalg (third algorithms))
+  (define (e) (error (format "key exchange algorithm ~a not supported" kexalg)))
+  (printf "XX~aXX V~aV\n" kexalg (bytes? kexalg))
+  (cond
+    [(bytes=? kexalg #"diffie-hellman-group-exchange-sha256") (diffie-hellman-group-exchange io handshake algorithms sha256->bin role)]
+    [(bytes=? kexalg #"diffie-hellman-group-exchange-sha1") (diffie-hellman-group-exchange io handshake algorithms sha1->bin role)]
+    [(bytes=? kexalg #"diffie-hellman-group14-sha1") (e)]
+    [(bytes=? kexalg #"diffie-hellman-group1-sha1") (e)]
+    [else (e)]))
+
+(define sshd
+  (class object%
+    (init-field (host "localhost"))
+    (init-field (port 2222))
+    (field (io null))
+    (field (role 'server))
+    (define/public (listen)
+      (define-values (in out) (tcp-accept (tcp-listen port 4 #t)))
+      (set! io (new ssh-transport (in in) (out out) (role role)))
+
+      (define handshake (do-handshake io role))
+      (define algs (algorithm-negotiation io role))
+      (do-key-exchange io handshake algs role)
+
+      (do-user-auth))
+
+    (define (gp)
+      (define-values (send-pkt recv-pkt) (curry-io io))
+      (define ppp (recv-pkt))
+      (printf "A~a\n" (bytes->hex-string ppp)))
+
+
+    (define (do-user-auth)
+      (define-values (send-pkt recv-pkt) (curry-io io))
+      (define ppp (recv-pkt))
       (define pp (open-input-bytes ppp))
-      (printf "~a ~a\n" (read-byte pp) (read-ssh-string pp)))
-;      (printf "~a\n" (read-ssh-string (open-input-bytes (recv-packet)))))
+      (define mt (read-byte pp))
+      (define ms (read-ssh-string pp))
+      (printf "A ~a ~a\n" mt ms)
+      (unless (and (= mt 5) (bytes=? ms #"ssh-userauth"))
+        (error (format "BAD USER AUTH SERVICE REQUEST ~a ~a" mt ms)))
+      (send-pkt (bytes-append 
+        (bytes SSH_MSG_SERVICE_ACCEPT) 
+        (build-ssh-bytes "ssh-userauth")))
+      (gp)
+)
+    
     (super-new)))
+
 
 (match (current-command-line-arguments)
   [(vector) (send (new ssh (host "localhost") (port 22)) connect "localhost" 2224)]
-  [(vector "s") (send (new sshd (host "localhost") (port 22)) listen)])
+  [(vector "s") (send (new sshd (host "localhost") (port 2222)) listen)])

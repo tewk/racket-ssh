@@ -30,15 +30,15 @@
     ))
 
 (define name->cipher
-  (make-hash (list (cons "aes-128" EVP_aes_128_cbc))))
+  (make-hash (list (cons #"aes128-cbc" EVP_aes_128_cbc))))
 
 (define (ssh-name->cipher ssh-name)
   (hash-ref name->cipher ssh-name 
     (lambda () (error (format "Cipher ~a not found" ssh-name)))))
   
 (define name->hmac
-  (make-hash (list (cons "md5" EVP_md5)
-                   (cons "sha1" EVP_sha1))))
+  (make-hash (list (cons #"hmac-md5" EVP_md5)
+                   (cons #"hmac-sha1" EVP_sha1))))
 
 (define (ssh-name->hmac ssh-name)
   (hash-ref name->hmac ssh-name 
@@ -55,20 +55,20 @@
   c)
 
 (define/provide (hmac-init hcntx ssh-name key)
-  (HMAC_Init_ex hcntx (subbytes key 0 16) 16 ((ssh-name->hmac ssh-name)) #f))
+  (HMAC_Init_ex hcntx (subbytes key 0 16) 16 ((ssh-name->hmac ssh-name)) #f)
+  16)
 
 (define/provide (hmacit hcntx data)
   (define result (make-bytes 16))
   (HMAC_Init_ex hcntx #f 0 #f #f)
   (HMAC_Update hcntx data (bytes-length data))
-  (define resultlen (HMAC_Final hcntx result))
-  (printf "~a ~a\n" resultlen (bytes->hex-string result))
+  (define rl (HMAC_Final hcntx result))
   result)
 
-(define/provide (encrypt-init ccntx ssh-name ec iv)
-  (EVP_EncryptInit_ex ccntx (EVP_aes_128_cbc) #f ec iv))
-(define/provide (decrypt-init ccntx ssh-name ec iv)
-  (EVP_DecryptInit_ex ccntx (EVP_aes_128_cbc) #f ec iv))
+(define/provide (cipher-init ccntx ssh-name ec iv en/de)
+  (EVP_CipherInit_ex ccntx ((ssh-name->cipher ssh-name)) #f ec iv en/de)
+  (EVP_CIPHER_CTX_set_padding ccntx 0)
+  32)
 
 (define/provide (decrypt-begin ccntx buffer iv)
   (define bl (bytes-length buffer))
@@ -76,48 +76,30 @@
   (define result (make-bytes rl))
   (define resultlen rl)
   (EVP_CipherInit_ex ccntx #f #f #f iv 0)
-  (printf "DB1 ~a ~a ~a\n"
-    (EVP_CIPHER_CTX_block_size ccntx)
-    (EVP_CIPHER_CTX_key_length ccntx)
-    (EVP_CIPHER_CTX_iv_length  ccntx))
-
-  (printf "DB1 ~a ~a ~a ~a ~a\n" 0 (bytes->hex-string result) resultlen (bytes->hex-string buffer) bl)
   (define-values (r rlo) (EVP_CipherUpdate ccntx result buffer bl))
-  (printf "DB1 ~a ~a ~a ~a ~a\n" r (bytes->hex-string result) rlo (bytes->hex-string buffer) bl)
-  (subbytes result 0 16))
+  (subbytes result 0 rlo))
 
 (define/provide (decrypt-rest ccntx buffer)
   (define bl (bytes-length buffer))
   (define rl (+ bl 16))
   (define result (make-bytes rl))
-  (define resultlen rl)
   (define result2 (make-bytes 32))
-  (define resultlen2 32)
-  (printf "DB2 ~a ~a ~a ~a ~a\n" 0 (bytes->hex-string result) resultlen (bytes->hex-string buffer) bl)
   (define-values (r rlo) (EVP_CipherUpdate ccntx result buffer bl))
-  (printf "DB2 ~a ~a ~a ~a ~a\n" r (bytes->hex-string result) rlo (bytes->hex-string buffer) bl)
-  (printf "DB3 ~a ~a ~a\n" 0 (bytes->hex-string result2) resultlen2)
   (define-values (r2 rlo2) (EVP_CipherFinal_ex ccntx result2))
-  (printf "DB3 ~a ~a ~a\n" r2 (bytes->hex-string result2) rlo2)
-  (bytes-append (subbytes result 0 32)
-                (subbytes result2 0 0)))
-
+  (bytes-append (subbytes result 0 rlo)
+                (subbytes result2 0 rlo2)))
 
 (define/provide (encrypt-all ccntx buffer iv)
   (define bl (bytes-length buffer))
   (define rl (+ bl 16))
   (define result (make-bytes rl))
-  (define resultlen rl)
   (define result2 (make-bytes 16))
-  (define resultlen2 16)
-  (EVP_EncryptInit_ex ccntx #f #f #f iv)
-  (EVP_EncryptUpdate ccntx result resultlen buffer bl)
-  (EVP_EncryptFinal_ex ccntx result resultlen)
-  (bytes-append (subbytes result 0 resultlen)
-                (subbytes result2 0 resultlen2)))
-
+  (EVP_CipherInit_ex ccntx #f #f #f iv 1)
+  (define-values (r rlo) (EVP_CipherUpdate ccntx result buffer bl))
+  (define-values (r2 rlo2) (EVP_CipherFinal_ex ccntx result2))
+  (bytes-append (subbytes result 0 rlo)
+                (subbytes result2 0 rlo2)))
 
 (define (ssh-host-public-file->blob fn)
   (define b64 (call-with-input-file fn port->bytes))
   (base64-decode (regexp-replace #px"\\S+\\s+(\\S+)\\s+\\S+" b64 #"\\1")))
-
