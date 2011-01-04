@@ -112,8 +112,6 @@
   (define sig (read-ssh-string in3))
   (values host-key host-key-cert server-pub sig-type sig))
 
-(define (say x) (printf "~a~n" x) x)
-
 (define ssh-stream
   (class object%
     (init-field (s null))
@@ -206,8 +204,7 @@
             (define enc-prefix (read-bytes prefix-size s))  
             (define prefix (decrypt-begin cipher enc-prefix IV))
             (define packet-len (->int32 (subbytes prefix 0 4)))
-            (when (packet-len . > . 1024) (error "PACKET TO LONG"))
-            (printf "RECV PKT LENGTH ~a\n" packet-len)
+            (when (packet-len . > . 1024) (error "PACKET TO LONG ~a" packet-len))
             (define bytes-left (+ (- packet-len prefix-size) 4))
             (define-values (enc-rest rest)
               (if (bytes-left . > . 0)
@@ -335,10 +332,10 @@
   (define-values (cpub) (parse-dh-group-exch-init (recv-pkt)))        ;  S <- C
   (define-values (dh spub shared-secret) (DiffieHellmanGroup14-get-shared-secret cpub))
   (define ssh-shared-secret (build-ssh-bin shared-secret))
-  (define exchange-hash (diffie-hellman-group-exchange-hash io handshake algorithms hasher->bin bmin bm bmax sshp sshg cpub spub ssh-shared-secret public-host-key-blob))
   (define public-host-key-blob (ssh-host-public-file->blob "/home/tewk/.ssh/rktsshhost.pub"))
+  (define exchange-hash (diffie-hellman-group-exchange-hash io handshake algorithms hasher->bin bmin bm bmax sshp sshg cpub spub ssh-shared-secret public-host-key-blob))
   (define signature (sha1-rsa-signature/fn "/home/tewk/.ssh/rktsshhost" exchange-hash))
-  (sendp KEXDH_GEX_REPLY
+  (sendp io KEXDH_GEX_REPLY
     (build-ssh-bytes public-host-key-blob)
     spub
     (build-ssh-bytes (bytes-append (build-ssh-bytes #"ssh-rsa") (build-ssh-bytes signature))))
@@ -439,7 +436,7 @@
       (define algs (algorithm-negotiation io role))
       (define exchange-hash (do-key-exchange io handshake algs role))
 
-      (do-server-user-auth io))
+      (do-server-user-auth io exchange-hash))
 
     (define (gp)
       (define-values (send-pkt recv-pkt) (curry-io io))
