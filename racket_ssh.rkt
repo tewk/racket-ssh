@@ -1,46 +1,20 @@
 #lang racket
 (require "ssh_openssl.rkt")
+(require "ssh-utils.rkt")
+(require "ssh-msg-ids.rkt")
+(require "userauth.rkt")
 (require racket/pretty)
+
+(define b->hs bytes->hex-string)
  
-(define (->bytes x)
-  (cond [(string? x) (string->bytes/locale x)]
-        [(bytes? x) x]
-        [(number? x) (integer->integer-bytes x 4 #f #t)]))
-
-(define (build-ssh-bytes data)
-  (define byte-data (->bytes data))
-  (bytes-append
-    (->bytes (bytes-length byte-data))
-    byte-data))
-
-(define (->int32 x) (integer-bytes->integer x #f #t))
-
-(define (read-ssh-string in)
-  (define len (->int32 (read-bytes 4 in)))
-  (define data (read-bytes len in))
-  data)
-
-(define (read-ssh-bool in) (if (= 0 (read-byte in)) #f #t))
-(define (read-ssh-uint32 in) (->int32 (read-bytes 4 in)))
-(define (random-bytes cnt) (apply bytes (for/list ([x (in-range cnt)]) (random 256))))
-
-(define (bytes-join strs sep)
-  (cond [(not (and (list? strs) (andmap bytes? strs)))
-         (raise-type-error 'bytes-join "list-of-byte-strings" strs)]
-        [(not (bytes? sep))
-         (raise-type-error 'bytes-join "bytes" sep)]
-        [(null? strs) #""]
-        [(null? (cdr strs)) (car strs)]
-        [else (apply bytes-append (add-between strs sep))]))
-
 (define (build-kexinit)
   (define algorithms (list 
-    (list #"diffie-hellman-group-exchange-sha1")
+    (list #"diffie-hellman-group-exchange-sha256" #"diffie-hellman-group-exchange-sha1")
     (list #"ssh-rsa")
     (list #"aes128-cbc")
     (list #"aes128-cbc")
-    (list #"hmac-md5")
-    (list #"hmac-md5")
+    (list #"hmac-md5" #"hmac-sha1")
+    (list #"hmac-md5" #"hmac-sha1")
     (list #"none")
     (list #"none")))
   (define pkt (bytes-append
@@ -138,40 +112,6 @@
   (define sig (read-ssh-string in3))
   (values host-key host-key-cert server-pub sig-type sig))
 
-(define SSH_MSG_DISCONNECT                       1) 
-(define SSH_MSG_IGNORE                           2) 
-(define SSH_MSG_UNIMPLEMENTED                    3) 
-(define SSH_MSG_DEBUG                            4) 
-(define SSH_MSG_SERVICE_REQUEST                  5) 
-(define SSH_MSG_SERVICE_ACCEPT                   6) 
-(define SSH_MSG_KEXINIT                         20) 
-(define SSH_MSG_NEWKEYS                         21) 
-(define KEXDH_INIT                              30) 
-(define KEXDH_REPLY                             31) 
-(define KEXDH_GEX_GROUP                         31)
-(define KEXDH_GEX_INIT                          32)
-(define KEXDH_GEX_REPLY                         33)
-(define KEXDH_GEX_REQUEST                       34)
-(define SSH_MSG_USERAUTH_REQUEST                50) 
-(define SSH_MSG_USERAUTH_FAILURE                51) 
-(define SSH_MSG_USERAUTH_SUCCESS                52) 
-(define SSH_MSG_USERAUTH_BANNER                 53) 
-(define SSH_MSG_USERAUTH_PK_OK                  60)
-(define SSH_MSG_GLOBAL_REQUEST                  80) 
-(define SSH_MSG_REQUEST_SUCCESS                 81) 
-(define SSH_MSG_REQUEST_FAILURE                 82) 
-(define SSH_MSG_CHANNEL_OPEN                    90) 
-(define SSH_MSG_CHANNEL_OPEN_CONFIRMATION       91) 
-(define SSH_MSG_CHANNEL_OPEN_FAILURE            92) 
-(define SSH_MSG_CHANNEL_WINDOW_ADJUST           93) 
-(define SSH_MSG_CHANNEL_DATA                    94) 
-(define SSH_MSG_CHANNEL_EXTENDED_DATA           95) 
-(define SSH_MSG_CHANNEL_EOF                     96) 
-(define SSH_MSG_CHANNEL_CLOSE                   97) 
-(define SSH_MSG_CHANNEL_REQUEST                 98) 
-(define SSH_MSG_CHANNEL_SUCCESS                 99) 
-(define SSH_MSG_CHANNEL_FAILURE                100) 
-
 (define (say x) (printf "~a~n" x) x)
 
 (define ssh-stream
@@ -192,6 +132,8 @@
     (define/public (init cname hname iv KEY INTEG)
       (define-values (crc bs kl ivl) (cipher-init cipher cname KEY iv (if (eq? dir 'out) 1 0)))
       (define-values (hrc hs hbs) (hmac-init hmac hname INTEG))
+      ;(printf "~a ~a ~a ~a\n" crc bs kl ivl)
+      ;(printf "~a ~a ~a\n" hrc hs hbs)
       (set! IV iv)
       (set! cipher-block-size bs)
       (set! min-pad (max 8 bs))
@@ -200,7 +142,7 @@
       (set! hmaclen hs)
       (set! on #t))
     
-    (define/public (send-raw lst)
+    (define/public (sendraw lst)
       (for ([x lst]) (write-bytes x s))
       (flush-output s))
 
@@ -216,7 +158,7 @@
         (set! IV (subbytes b (- bl ivlen) bl))))
 
     (define (calc-hmac pkt)
-      (hmacit hmac (bytes-append (->bytes pktcnt) pkt)))
+      (subbytes (hmacit hmac (bytes-append (->bytes pktcnt) pkt)) 0 hmaclen))
 
     (define (build-packet buffer)
       (define buf (->bytes buffer))
@@ -243,7 +185,8 @@
       (define data (read-bytes data-len in))
       (define padding (read-bytes padding-len in))
       (define type (bytes-ref data 0))
-      (eprintf "RECV PKT: type ~a pktlen: ~a padding ~a datalen ~a~n" type packet-len padding-len data-len)
+      (eprintf "RECV PKT: type ~a pktlen: ~a padding ~a datalen ~a\n" type packet-len padding-len data-len)
+      ;(eprintf "~a\n" (b->hs data))
       (when (= type 1)
         (define in (open-input-bytes data))
         (define type (read-byte in))
@@ -265,12 +208,19 @@
             (define packet-len (->int32 (subbytes prefix 0 4)))
             (when (packet-len . > . 1024) (error "PACKET TO LONG"))
             (printf "RECV PKT LENGTH ~a\n" packet-len)
-            (define enc-rest (read-bytes (+ (- packet-len prefix-size) 4) s))
-            (define rest (decrypt-rest cipher enc-rest))
+            (define bytes-left (+ (- packet-len prefix-size) 4))
+            (define-values (enc-rest rest)
+              (if (bytes-left . > . 0)
+                (let ()
+                  (define enc-rest (read-bytes (+ (- packet-len prefix-size) 4) s))
+                  (define rest (decrypt-rest cipher enc-rest))
+                  (values enc-rest rest))
+                (values #"" #"")))
             (define hmacin (read-bytes hmaclen s))
             (define pkt (bytes-append prefix rest))
             (updateIV (bytes-append enc-prefix enc-rest))
-            (unless (bytes=? hmacin (calc-hmac pkt)) (error "HMACS dont match"))
+            (define myhmac (calc-hmac pkt))
+            (unless (bytes=? hmacin myhmac) (error 'recv-packet "HMACS dont match ~a ~a ~a ~a" (b->hs hmacin) (b->hs myhmac) (bytes-length hmacin) (bytes-length myhmac)))
             pkt)
           (let* ([prefix-size 4]
                  [prefix (read-bytes prefix-size s)]
@@ -303,44 +253,11 @@
     (field (ins (new ssh-stream  [s in] [dir 'in])))
     (field (outs (new ssh-stream [s out] [dir 'out])))
   
-    (define/public (send-raw . x) (send outs send-raw x))
+    (define/public (send-raw . x) (send outs sendraw x))
     (define/public (read-line)  (send ins readline))
     (define/public (send-packet x) (send outs send-build-packet x))
     (define/public (recv-packet) (send ins recv-parse-packet))
     (define/public (get-CS-SC) (if (eq? role 'server) (values ins outs) (values outs ins)))
-    (super-new)))
-
-(define ssh
-  (class object%
-    (field (io null))
-    (define/public (connect host port)
-      (define role 'server)
-      (define-values (in out) (tcp-connect "localhost" 2224))
-      (set! io (new ssh-transport (in in) (out out)))
-
-      (define handshake (do-handshake io role))
-      (define algs (algorithm-negotiation io role))
-      (do-key-exchange io handshake algs role)
-
-#|
-      ;DH-GROUP_EXECH
-      (let ([b (bytes-append (bytes KEXDH_GEX_REQUEST) (->bytes 1024) (->bytes 1024) (->bytes 8192))])
-        ;(printf "~a\n" (bytes->hex-string b))
-        (send-buffer b))
-      (let-values ([(pbs gbs) (parse-dh-group-exch-reply (recv-packet))])
-        (printf "P ~a~nG ~a~n" (bytes->hex-string pbs) (bytes->hex-string gbs))
-        (let-values ([(dh pub) (DiffieHellman-get-public-key pbs gbs 20)])
-          (let ([b (bytes-append (bytes KEXDH_GEX_INIT) pub)])
-           ;(printf "~a\n" (bytes->hex-string b))
-           (send-buffer b))
-          (let-values ([(s-host-key s-sig server-pub-key sigtype sig) (parse-dh-group-exch-gex-reply (recv-packet))])
-            (let-values ([(shared-secret) (DiffieHellman-get-shared-secret dh server-pub-key)])
-            (printf "~a~n" (bytes->hex-string (recv-packet)))
-            (send-buffer (bytes SSH_MSG_NEWKEYS))))))
-|#  
-
-      (send io hmac-on))
- 
     (super-new)))
 
 (define (hex-bytes->bytes bstr)
@@ -364,11 +281,41 @@
 
 (define (curry-io io)
   (values (lambda (x) (send io send-packet x)) (lambda () (send io recv-packet))))
-(define (diffie-hellman-group-exchange io handshake algorithms hasher->bin role)
-      (define-values (send-pkt recv-pkt) (curry-io io))
-      (match-define (list client-version server-version) handshake)
-      (match-define (list client-kex-payload server-kex-payload kex-alg pub-priv-alg client-sym server-sym client-hmac server-hmac client-comp server-comp) algorithms)
-      (define p (hex-bytes->bytes (bytes-append
+
+(define (diffie-hellman-group-exchange-hash io handshake algorithms hasher->bin bmin bm bmax sshp sshg cpub spub ssh-shared-secret public-host-key-blob)
+  (match-define (list client-version server-version) handshake)
+  (match-define (list client-kex-payload server-kex-payload kex-alg pub-priv-alg client-sym server-sym client-hmac server-hmac client-comp server-comp) algorithms)
+  (define (chomprn x) (regexp-replace "\r$" (regexp-replace "\n$" (regexp-replace "\r\n$" x "") "") ""))
+  (hasher->bin
+    (build-ssh-bytes (chomprn client-version))
+    (build-ssh-bytes (chomprn server-version))
+    (build-ssh-bytes client-kex-payload)
+    (build-ssh-bytes server-kex-payload)
+    (build-ssh-bytes public-host-key-blob)
+    (->bytes bmin) (->bytes bm) (->bytes bmax) 
+    sshp 
+    sshg 
+    (build-ssh-bytes cpub)
+    spub
+    ssh-shared-secret))
+
+(define (client-diffie-hellman-group-exchange io handshake algorithms hasher->bin role)
+  (define-values (send-pkt recv-pkt) (curry-io io))
+  (sendp io KEXDH_GEX_REQUEST (->bytes 1024) (->bytes 1024) (->bytes 8192))
+  (define-values (pid1 sshp sshg) (recvp io "bss"))
+  (define-values (dh cpub) (DiffieHellman-get-public-key sshp sshg 20))
+  (sendp io bytes KEXDH_GEX_INIT cpub)
+  (define-values (s-host-key spub sigtype sig) (parse-dh-group-exch-gex-reply (recv-pkt)))
+  (define-values (shared-secret) (DiffieHellman-get-shared-secret dh spub))
+  (define ssh-shared-secret (build-ssh-bin shared-secret))
+  (define exchange-hash (diffie-hellman-group-exchange-hash io handshake algorithms hasher->bin 1024 1024 8192 sshp sshg cpub spub ssh-shared-secret s-host-key))
+  (unless (sha1-rsa-verify/bin s-host-key exchange-hash) (error "a"))
+  (values exchange-hash ssh-shared-secret))
+
+
+(define (server-diffie-hellman-group-exchange io handshake algorithms hasher->bin role)
+  (define-values (send-pkt recv-pkt) (curry-io io))
+  (define p (hex-bytes->bytes (bytes-append
 #"00FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"
 #"29024E088A67CC74020BBEA63B139B22514A08798E3404DD"
 #"EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245"
@@ -380,49 +327,42 @@
 #"E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9"
 #"DE2BCBF6955817183995497CEA956AE515D2261898FA0510"
 #"15728E5A8AACAA68FFFFFFFFFFFFFFFF")))
-      (define g (bytes 2))
-      (define sshp (build-ssh-bytes p))
-      (define sshg (build-ssh-bytes g))
-      (define public-host-key-blob (ssh-host-public-file->blob "/home/tewk/.ssh/rktsshhost.pub"))
-      (define (chomprn x) (regexp-replace "\r$" (regexp-replace "\n$" (regexp-replace "\r\n$" x "") "") ""))
-      (define-values (bmin bm bmax) (parse-dh-group-exch-req (recv-pkt))) ;  S <- C
-      (send-pkt (bytes-append (bytes KEXDH_GEX_GROUP) sshp sshg))         ;  S -> C
-      (define-values (client-e) (parse-dh-group-exch-init (recv-pkt)))    ;  S <- C
-      (define-values (dh pub shared-secret) (DiffieHellmanGroup14-get-shared-secret client-e))
-      (define ssh-shared-secret (build-ssh-bin shared-secret))
-      (define exchange-hash 
-        (hasher->bin
-          (build-ssh-bytes (chomprn client-version))
-          (build-ssh-bytes (chomprn server-version))
-          (build-ssh-bytes client-kex-payload)
-          (build-ssh-bytes server-kex-payload)
-          (build-ssh-bytes public-host-key-blob)
-          (->bytes bmin) (->bytes bm) (->bytes bmax) 
-          sshp 
-          sshg 
-          (build-ssh-bytes client-e)
-          pub
-          ssh-shared-secret))
-      (define signature (sha1-rsa-signature/fn "/home/tewk/.ssh/rktsshhost" exchange-hash))
-      (send-pkt (bytes-append 
-        (bytes KEXDH_GEX_REPLY) 
-        (build-ssh-bytes public-host-key-blob)
-        pub
-        (build-ssh-bytes (bytes-append (build-ssh-bytes #"ssh-rsa") (build-ssh-bytes signature)))))
+  (define g (bytes 2))
+  (define sshp (build-ssh-bytes p))
+  (define sshg (build-ssh-bytes g))
+  (define-values (bmin bm bmax) (parse-dh-group-exch-req (recv-pkt))) ;  S <- C
+  (sendp io KEXDH_GEX_GROUP sshp sshg)                                 ;  S -> C
+  (define-values (cpub) (parse-dh-group-exch-init (recv-pkt)))        ;  S <- C
+  (define-values (dh spub shared-secret) (DiffieHellmanGroup14-get-shared-secret cpub))
+  (define ssh-shared-secret (build-ssh-bin shared-secret))
+  (define exchange-hash (diffie-hellman-group-exchange-hash io handshake algorithms hasher->bin bmin bm bmax sshp sshg cpub spub ssh-shared-secret public-host-key-blob))
+  (define public-host-key-blob (ssh-host-public-file->blob "/home/tewk/.ssh/rktsshhost.pub"))
+  (define signature (sha1-rsa-signature/fn "/home/tewk/.ssh/rktsshhost" exchange-hash))
+  (sendp KEXDH_GEX_REPLY
+    (build-ssh-bytes public-host-key-blob)
+    spub
+    (build-ssh-bytes (bytes-append (build-ssh-bytes #"ssh-rsa") (build-ssh-bytes signature))))
+  (values exchange-hash ssh-shared-secret))
 
-      (send-pkt (bytes SSH_MSG_NEWKEYS))
-      (unless (= (bytes-ref (recv-pkt) 0) SSH_MSG_NEWKEYS) (error "Expected SSH_MSG_NEWKEYS"))
+(define (diffie-hellman-group-exchange io handshake algorithms hasher->bin role)
+  (define-values (exchange-hash ssh-shared-secret)
+    ((if (server? role) server-diffie-hellman-group-exchange client-diffie-hellman-group-exchange)
+     io handshake algorithms hasher->bin role))
 
-      (define session_id exchange-hash)
+    (sendp io SSH_MSG_NEWKEYS)
+    (unless (recv/assert io SSH_MSG_NEWKEYS) (error "Expected SSH_MSG_NEWKEYS"))
 
-      (define (setup-encrypted-streams ccipher chmac scipher shmac ssh-shared-secret exchange-hash session_id hasher->bin s/c)
-        (define (gen k) (hasher->bin ssh-shared-secret exchange-hash k session_id))
-        (define-values (C->S S->C) (send io get-CS-SC))
-        (send C->S init ccipher chmac (gen #"A") (gen #"C") (gen #"E"))
-        (send S->C init scipher shmac (gen #"B") (gen #"D") (gen #"F")))
+    (define session_id exchange-hash)
 
-      (setup-encrypted-streams client-sym client-hmac server-sym server-hmac ssh-shared-secret exchange-hash session_id hasher->bin role)
-)
+    (define (setup-encrypted-streams ccipher chmac scipher shmac ssh-shared-secret exchange-hash session_id hasher->bin s/c)
+      (define (gen k) (hasher->bin ssh-shared-secret exchange-hash k session_id))
+      (define-values (C->S S->C) (send io get-CS-SC))
+      (send C->S init ccipher chmac (gen #"A") (gen #"C") (gen #"E"))
+      (send S->C init scipher shmac (gen #"B") (gen #"D") (gen #"F")))
+
+    (match-define (list client-kex-payload server-kex-payload kex-alg pub-priv-alg client-sym server-sym client-hmac server-hmac client-comp server-comp) algorithms)
+    (setup-encrypted-streams client-sym client-hmac server-sym server-hmac ssh-shared-secret exchange-hash session_id hasher->bin role)
+    exchange-hash)
 
 (define (server? x) (eq? x 'server))
 (define (do-handshake io role)
@@ -457,7 +397,7 @@
   (for/list ([cs ca]
              [ss sa])
     (define nv (for/or ([c cs]) (if (member c ss) c #f)))
-    (unless nv (error "failed algorithm negotiation"))
+    (unless nv (error 'negotiate "failed algorithm negotiation ~a ~a" cs ss))
     nv))
 
 (define (do-key-exchange io handshake algorithms role)
@@ -469,6 +409,21 @@
     [(bytes=? kexalg #"diffie-hellman-group14-sha1") (e)]
     [(bytes=? kexalg #"diffie-hellman-group1-sha1") (e)]
     [else (e)]))
+
+(define ssh
+  (class object%
+    (field (io null))
+    (define/public (connect host port)
+      (define role 'server)
+      (define-values (in out) (tcp-connect "localhost" 2224))
+      (set! io (new ssh-transport (in in) (out out)))
+
+      (define handshake (do-handshake io role))
+      (define algs (algorithm-negotiation io role))
+      (do-key-exchange io handshake algs role)
+      (do-client-user-auth io))
+
+    (super-new)))
 
 (define sshd
   (class object%
@@ -482,61 +437,15 @@
 
       (define handshake (do-handshake io role))
       (define algs (algorithm-negotiation io role))
-      (do-key-exchange io handshake algs role)
+      (define exchange-hash (do-key-exchange io handshake algs role))
 
-      (do-user-auth))
+      (do-server-user-auth io))
 
     (define (gp)
       (define-values (send-pkt recv-pkt) (curry-io io))
       (define ppp (recv-pkt))
       (printf "A~a\n" (bytes->hex-string ppp)))
 
-
-    (define (do-user-auth)
-      (define-values (send-pkt recv-pkt) (curry-io io))
-      (define ppp (recv-pkt))
-      (define pp (open-input-bytes ppp))
-      (define mt (read-byte pp))
-      (define ms (read-ssh-string pp))
-      (printf "A ~a ~a\n" mt ms)
-      (unless (and (= mt 5) (bytes=? ms #"ssh-userauth"))
-        (error (format "BAD USER AUTH SERVICE REQUEST ~a ~a" mt ms)))
-      (send-pkt (bytes-append 
-        (bytes SSH_MSG_SERVICE_ACCEPT) 
-        (build-ssh-bytes "ssh-userauth")))
-
-      (define ua1 (recv-pkt))
-      (define uain (open-input-bytes ua1))
-      (define uaid (read-byte uain))
-      (define user (read-ssh-string uain))
-      (define serv (read-ssh-string uain))
-      (define type (read-ssh-string uain))
-      (define bool (read-ssh-bool uain))
-      (define algo (read-ssh-string uain))
-      (define keyy (read-ssh-string uain))
-
-      (printf "~a ~a ~a ~a ~a ~a\n~a\n" uaid user serv type bool algo (bytes->hex-string keyy))
-      (send-pkt (bytes-append 
-        (bytes SSH_MSG_USERAUTH_PK_OK) 
-        (build-ssh-bytes algo)
-        (build-ssh-bytes keyy)))
-
-(let ()
-      (define ua1 (recv-pkt))
-      (define uain (open-input-bytes ua1))
-      (define uaid (read-byte uain))
-      (define user (read-ssh-string uain))
-      (define serv (read-ssh-string uain))
-      (define type (read-ssh-string uain))
-      (define bool (read-ssh-bool uain))
-      (define algo (read-ssh-string uain))
-      (define keyy (read-ssh-string uain))
-      (define sign (read-ssh-string uain))
-      (printf "~a ~a ~a ~a ~a ~a\n~a\n" uaid user serv type bool algo (bytes->hex-string keyy)))
-
-      (send-pkt (bytes-append (bytes SSH_MSG_USERAUTH_SUCCESS)))
-      (gp))
-    
     (super-new)))
 
 

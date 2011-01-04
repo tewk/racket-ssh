@@ -20,6 +20,7 @@
          fn->EVP_PKEY-private
          sha1-rsa-signature
          sha1-rsa-signature/fn
+         sha1-rsa-verify/bin
          ssh-host-public-file->blob
          bytes->hex-string)
 
@@ -62,7 +63,7 @@
   (values rc size block_size))
 
 (define/provide (hmacit hcntx data)
-  (define result (make-bytes 16))
+  (define result (make-bytes EVP_MAX_MD_SIZE))
   (HMAC_Init_ex hcntx #f 0 #f #f)
   (HMAC_Update hcntx data (bytes-length data))
   (define rl (HMAC_Final hcntx result))

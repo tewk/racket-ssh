@@ -17,7 +17,9 @@
          build-ssh-bin
          fn->EVP_PKEY-private
          sha1-rsa-signature
-         sha1-rsa-signature/fn)
+         sha1-rsa-signature/fn
+         sha1-rsa-verify/bin
+         EVP_MAX_MD_SIZE)
 
 (define-runtime-path libcrypto-so
   (case (system-type)
@@ -65,6 +67,7 @@
 (define-crypto-func OpenSSL_add_all_digests    (_fun -> _void))
 
 (define EVP_MAX_MD_SIZE 64)
+(define HMAC_MAX_MD_CBLOCK 128)
 (define NID_sha1 64)
 (define SHA1_DIGEST_LENGTH 20)
 (define SHA256_DIGEST_LENGTH 32)
@@ -348,6 +351,10 @@ EVP_aes_256_ofb)
     (RSA_sign NID_sha1 digest (bytes-length digest) sb sl pk)
     (subbytes sb 0 sl)))
 
+(define (sha1-rsa-verify/bin b key sig)
+  (define pk (bin->RSAPrivateKey key))
+  (RSA_verify NID_sha1 b (bytes-length b) sig (bytes-length sig) pk))
+
 (define (sha1-rsa-signature b key)
   (let ([digest (make-bytes EVP_MAX_MD_SIZE)]
         [dl EVP_MAX_MD_SIZE]
@@ -365,6 +372,13 @@ EVP_aes_256_ofb)
     (lambda () (BIO_free bio))))
 
 (define (fn->RSAPrivateKey fn)
+  (define bio #f)
+  (dynamic-wind
+    (lambda () (set! bio (BIO_new_file (->bytes fn) #"r")))
+    (lambda () (PEM_read_bio_RSAPrivateKey bio #f #f #f))
+    (lambda () (BIO_free bio))))
+
+(define (bin->RSAPrivateKey fn)
   (define bio #f)
   (dynamic-wind
     (lambda () (set! bio (BIO_new_file (->bytes fn) #"r")))
