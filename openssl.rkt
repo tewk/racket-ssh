@@ -1,25 +1,17 @@
 #lang racket/base
 (require ffi/unsafe
          racket/runtime-path
-         (for-syntax racket/base))
-(require openssl/sha1)
+         (for-syntax racket/base)
+         openssl/sha1)
 
-(provide MD5-it
-         DiffieHellmanGroup1-get-public-key
-         DiffieHellman-get-public-key
-         DiffieHellman-get-shared-secret
-         DiffieHellmanGroup14-get-shared-secret
-         sha256->hex
-         sha256->bin
-         sha1->hex
-         sha1->bin
-         build-ssh-bn
-         build-ssh-bin
-         fn->EVP_PKEY-private
-         sha1-rsa-signature
-         sha1-rsa-signature/fn
-         sha1-rsa-verify/bin
-         EVP_MAX_MD_SIZE)
+(provide (struct-out BN)
+         (struct-out DH)
+         EVP_MAX_MD_SIZE
+         SHA1_DIGEST_LENGTH
+         SHA256_DIGEST_LENGTH
+         NID_sha1
+         BNp
+         BN_num_bytes)
 
 (define-runtime-path libcrypto-so
   (case (system-type)
@@ -98,9 +90,15 @@
 (define-crypto-func PEM_read_bio_PrivateKey     (_fun _BIO-pointer (_or-null _EVP_PKEY-pointer) (_or-null _pointer) (_or-null _pointer) -> _EVP_PKEY-pointer))
 (define-crypto-func PEM_read_PrivateKey         (_fun _FILE-pointer (_or-null _EVP_PKEY-pointer) (_or-null _pointer) (_or-null _pointer) -> _EVP_PKEY-pointer))
 
+(define-crypto-func PEM_read_bio_RSAPublicKey  (_fun _BIO-pointer (_or-null _RSA-pointer) (_or-null _pointer) (_or-null _pointer)  -> _RSA-pointer))
+(define-crypto-func PEM_read_RSAPublicKey      (_fun _FILE-pointer _RSA-pointer _pointer _pointer -> _RSA-pointer))
+(define-crypto-func PEM_read_bio_PublicKey     (_fun _BIO-pointer (_or-null _EVP_PKEY-pointer) (_or-null _pointer) (_or-null _pointer) -> _EVP_PKEY-pointer))
+(define-crypto-func PEM_read_PublicKey         (_fun _FILE-pointer (_or-null _EVP_PKEY-pointer) (_or-null _pointer) (_or-null _pointer) -> _EVP_PKEY-pointer))
+
 (define-crypto-func BIO_s_file   (_fun                                   -> _BIO_METHOD-pointer))
 (define-crypto-func BIO_new_file (_fun _bytes _bytes                     -> _BIO-pointer))
 (define-crypto-func BIO_new_fp   (_fun _FILE-pointer _int                -> _BIO-pointer))
+(define-crypto-func BIO_new_mem_buf   (_fun _bytes _int                  -> _BIO-pointer))
 (define-crypto-func BIO_free     (_fun _BIO-pointer                      -> _void))
 (define-crypto-func BIO_set_fp   (_fun _BIO-pointer _FILE-pointer _int   -> _void))
 (define-crypto-func BIO_get_fp   (_fun _BIO-pointer ( _ptr o _FILE-pointer) -> _void))
@@ -337,95 +335,9 @@ EVP_aes_256_ofb)
 (define EVP_aes_192_cfb EVP_aes_192_cfb128)
 (define EVP_aes_256_cfb EVP_aes_256_cfb128)
 
-(define (sha1-rsa-signature/fn fn b)
-  (let ([db (make-bytes EVP_MAX_MD_SIZE)]
-        [dl EVP_MAX_MD_SIZE]
-        [ctx (EVP_MD_CTX_create)])
-    (EVP_DigestInit ctx (EVP_sha1))
-    (EVP_DigestUpdate ctx b (bytes-length b))
-    (EVP_DigestFinal ctx db dl)
-    (define digest (subbytes db 0 20))
-    (define pk (fn->RSAPrivateKey fn))
-    (define sl (RSA_size pk))
-    (define sb (make-bytes sl))
-    (RSA_sign NID_sha1 digest (bytes-length digest) sb sl pk)
-    (subbytes sb 0 sl)))
-
-(define (sha1-rsa-verify/bin b key sig)
-  (define pk (bin->RSAPrivateKey key))
-  (RSA_verify NID_sha1 b (bytes-length b) sig (bytes-length sig) pk))
-
-(define (sha1-rsa-signature b key)
-  (let ([digest (make-bytes EVP_MAX_MD_SIZE)]
-        [dl EVP_MAX_MD_SIZE]
-        [ctx (EVP_MD_CTX_create)])
-    (EVP_DigestInit ctx (EVP_sha1))
-    (EVP_DigestUpdate ctx b (bytes-length b))
-    (EVP_SignFinal ctx digest dl key)
-    (subbytes digest 0 dl)))
-
-(define (fn->EVP_PKEY-private fn)
-  (define bio #f)
-  (dynamic-wind
-    (lambda () (set! bio (BIO_new_file (->bytes fn) #"r")))
-    (lambda () (PEM_read_bio_PrivateKey bio #f #f #f))
-    (lambda () (BIO_free bio))))
-
-(define (fn->RSAPrivateKey fn)
-  (define bio #f)
-  (dynamic-wind
-    (lambda () (set! bio (BIO_new_file (->bytes fn) #"r")))
-    (lambda () (PEM_read_bio_RSAPrivateKey bio #f #f #f))
-    (lambda () (BIO_free bio))))
-
-(define (bin->RSAPrivateKey fn)
-  (define bio #f)
-  (dynamic-wind
-    (lambda () (set! bio (BIO_new_file (->bytes fn) #"r")))
-    (lambda () (PEM_read_bio_RSAPrivateKey bio #f #f #f))
-    (lambda () (BIO_free bio))))
-
-(define (sha1->hex . lst)
-  (bytes->hex-string (apply sha1->bin lst)))
-(define (sha1->bin . lst)
-  (let ([ctx (malloc 256)]
-        [tmp (make-bytes 4096)]
-        [result (make-bytes SHA1_DIGEST_LENGTH)])
-    (SHA1_Init ctx)
-    (for ([x lst]) (SHA1_Update ctx x (bytes-length x)))
-    (SHA1_Final result ctx)
-    result))
-
-(define (sha256->hex . lst)
-  (bytes->hex-string (apply sha256->bin lst)))
-(define (sha256->bin . lst)
-  (let ([ctx (malloc 256)]
-        [tmp (make-bytes 4096)]
-        [result (make-bytes SHA256_DIGEST_LENGTH)])
-    (SHA256_Init ctx)
-    (for ([x lst]) 
-      (SHA256_Update ctx x (bytes-length x)))
-    (SHA256_Final result ctx)
-    result))
-
-
-(define (->bytes x)
-  (cond [(string? x) (string->bytes/locale x)]
-        [(bytes? x) x]
-        [(number? x) (integer->integer-bytes x 4 #f #t)]))
-(define (BN_num_bytes bn)
-  (ceiling (/ (+ (BN_num_bits bn) 7) 8)))
-
-(define (build-ssh-bin b)
-  (define bl (bytes-length b))
-  (if (not (= 0 (bitwise-and #x80 (bytes-ref b 0))))
-    (bytes-append (->bytes (+ bl 1)) (bytes 0) b)
-    (bytes-append (->bytes bl) b)))
-
-(define (build-ssh-bn bn)
-  (define b (make-bytes (BN_num_bytes bn) 0))
-  (define bl (BN_bn2bin bn b))
-  (build-ssh-bin (subbytes b 0 bl)))
+(define-syntax-rule (for/sum ([a b]...) body ...)
+  (for/fold ([sum 0]) ([a b]...)
+    (+ sum (begin body ...)))) 
 
 (define (BNp bn)
   (define bits-set (for/sum ([i (in-range (BN_num_bits bn))]) (BN_is_bit_set bn i)))
@@ -434,142 +346,5 @@ EVP_aes_256_ofb)
   (printf "~a ~a ~a ~a ~a/~a\n" (BN-top bn) (BN-dmax bn) (BN-neg bn) (BN-flags bn) bits-set (BN_num_bits bn))
   (printf "~a\n" (bytes->hex-string (subbytes b 0 bl))))
 
-(define (DiffieHellmanGroup1-get-public-key)
-  (define dh (DH_new))
-  (define p_s (bytes-append
-  #"FFFFFFFFFFFFFFFFC90FDAA22168C234"
-  #"C4C6628B80DC1CD129024E088A67CC74"
-  #"020BBEA63B139B22514A08798E3404DD"
-  #"EF9519B3CD3A431B302B0A6DF25F1437"
-  #"4FE1356D6D51C245E485B576625E7EC6"
-  #"F44C42E9A637ED6B0BFF5CB6F406B7ED"
-  #"EE386BFB5A899FA5AE9F24117C4B1FE6"
-  #"49286651ECE65381FFFFFFFFFFFFFFFF"))
-  (define p (BN_new))
-  (define g (BN_new))
-  (BN_hex2bn p p_s)
-  (BN_dec2bn g #"2")
-
-  (set-DH-p! dh p)
-  (set-DH-g! dh g)
-  (DiffieHellmanGenerateKey dh 20)
-  (values dh (build-ssh-bn (DH-pub_key dh))))
-
-(define (DiffieHellman-get-public-key pbs gbs bits-needed)
-  (define dh (DH_new))
-  (define p (BN_new))
-  (define g (BN_new))
-
-  (set-DH-p! dh (BN_bin2bn pbs (bytes-length pbs) p))
-  (set-DH-g! dh (BN_bin2bn gbs (bytes-length gbs) g))
-  (DiffieHellmanGenerateKey dh (* 16 8))
-  (values dh (build-ssh-bn (DH-pub_key dh))))
-
-(define (MD5-it d)
-  (define r (make-bytes 16 0))
-  (MD5 d (bytes-length d) r)
-  r)
-
-(define (DiffieHellman-get-shared-secret dh peer-public-key)
-  (define shared-secret (make-bytes (DH_size dh)))
-  (DH_compute_key shared-secret peer-public-key dh))
-
-(define (DiffieHellmanGenerateKey dh bits-needed)
-  (define pbits (BN_num_bits (DH-p dh)))
-  (define bits-needed*2 (* 2 bits-needed))
-  ;(printf "~a ~a ~a\n" bits-needed bits-needed*2 pbits)
-  (when (bits-needed . > . (/ 2147483647 2))
-    (eprintf "DiffieHellmanGenerateKey group too bi: ~a (2*bits-needed ~a)\n" pbits bits-needed*2))
-  (when (bits-needed*2 . >= . pbits)
-    (eprintf "DiffieHellmanGenerateKey group too small: (p bits ~a) <= (2*bits-needed ~a) \n" pbits bits-needed*2))
-
-  (let loop ()
-    ;(when (not (DH-priv_key dh))
-    ;  (BN_clear_free (DH-priv_key dh)))
-    (set-DH-priv_key! dh (BN_new))
-    (when (= 0 (BN_rand (DH-priv_key dh) bits-needed*2 0 0))
-      (eprintf "dh_gen_key: BN_rand failed"))
-    (when (= 0 (DH_generate_key dh))
-      (eprintf "DH_generate_key failed"))
-    (if (not (DiffieHellmanPubIsValid dh (DH-pub_key dh) "desc"))
-      (loop)
-      #t)))
-
-(define-syntax-rule (with-BN ([a b]...) body ...)
-  (let* ([a null] ...)
-    (dynamic-wind
-      (lambda ()
-        (set! a b) ...)
-      (lambda ()
-        body ...)
-      (lambda ()
-        (BN_clear_free a) ...))))
-
-(define-syntax-rule (for/sum ([a b]...) body ...)
-  (for/fold ([sum 0]) ([a b]...)
-    (+ sum (begin body ...)))) 
-
-(define (DiffieHellmanPubIsValid dh pub desc)
- (with-BN ([tmp (BN_new)])
-  ;(printf "publ ") (BNp (DH-pub_key dh))
-  ;(printf "priv ") (BNp (DH-priv_key dh))
-  ;(printf "p    ") (BNp (DH-p dh))
-  (BN_sub tmp (DH-p dh) (BN_value_one))
-  ;(printf "p-1  ") (BNp tmp)
-  ;(printf "cmp pub tmp ~a\n" (BN_cmp pub tmp))
-  (cond 
-   [(not (zero? (BN-neg pub))) (eprintf "~a pub is negative" desc) #f]
-   [(not (= 1 (BN_cmp pub (BN_value_one)))) (eprintf "~a pub is <= 1" desc) #f]
-   [(or (zero? (BN_sub tmp (DH-p dh) (BN_value_one)))
-        (not (= -1 (BN_cmp pub tmp))))
-        (eprintf "invalid public DH value: >= p-1\n")
-        (eprintf "~a ~a ~a\n" (DH-p dh) pub (BN_cmp pub tmp))
-        (BNp (DH-p dh))
-        (BNp tmp)
-        (BNp pub)
-        #f]
-  [else
-    (define pbits (BN_num_bits (DH-p dh)))
-    (define pub-bits-set (for/sum ([i (in-range pbits)]) (BN_is_bit_set pub i)))
-    ;(eprintf "bits set ~a/~a\n" pub-bits-set pbits)
-    (if (pub-bits-set . > . 1)
-      #t
-      (begin
-        (eprintf "invalid public DH value (~a/~a)\n" pub-bits-set pbits)
-        #f))])))
-  
-      
-    
-  
-
-(define (DiffieHellmanGroup14-get-shared-secret peer-public-key)
-  (define p_s (bytes-append
-#"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"
-#"29024E088A67CC74020BBEA63B139B22514A08798E3404DD"
-#"EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245"
-#"E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"
-#"EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3D"
-#"C2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F"
-#"83655D23DCA3AD961C62F356208552BB9ED529077096966D"
-#"670C354E4ABC9804F1746C08CA18217C32905E462E36CE3B"
-#"E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9"
-#"DE2BCBF6955817183995497CEA956AE515D2261898FA0510"
-#"15728E5A8AACAA68FFFFFFFFFFFFFFFF"))
-  (define dh (DH_new))
-  (define p (BN_new))
-  (define g (BN_new))
-  (define e (BN_new))
-  (BN_hex2bn p p_s)
-  (BN_dec2bn g #"2")
-  (BN_bin2bn peer-public-key (bytes-length peer-public-key) e)
-  (set-DH-p! dh p)
-  (set-DH-g! dh g)
-  (DiffieHellmanGenerateKey dh 20)
-#|
-  (define bits-needed (cond [(bits-neededx . <= . 128) 1024]
-                            [(bits-neededx . <= . 192) 2048]
-                            [else 4096]))
-|#
-  (define shared-secret (make-bytes (DH_size dh)))
-  (DH_compute_key shared-secret e dh)
-  (values dh (build-ssh-bn (DH-pub_key dh)) shared-secret))
+(define (BN_num_bytes bn)
+  (ceiling (/ (+ (BN_num_bits bn) 7) 8)))

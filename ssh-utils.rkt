@@ -6,6 +6,8 @@
 
 (provide sendp
          recvp
+         recv+
+         recv++
          recv/assert
          ->bytes
          ->sbytes
@@ -18,7 +20,9 @@
          read-ssh-bool
          random-bytes
          bytes-join
-         parse)
+         parse
+         parse/bs
+         hex-bytes->bytes)
 
 (define (say x) (printf "~a~n" x) x)
 
@@ -27,9 +31,10 @@
     (bytes type)
     (map ->sbytes others))))
 
+(define (assert/equal? a b)
+  (unless (equal? a b) (error 'assert/equal? "X~aX doesn't match X~aX" a b)))
+
 (define (recv/assert io type . others)
-  (define (assert/equal? a b)
-    (unless (equal? a b) (error 'assert/equal? "X~aX doesn't match X~aX" a b)))
   (define pkt (send io recv-packet))
   (define in (open-input-bytes pkt))
   (assert/equal? type (read-byte in))
@@ -39,18 +44,33 @@
           [(integer? x) (assert/equal? x (read-ssh-uint32 in))]
           [(boolean? x) (assert/equal? x (read-ssh-bool in))])))
 
-(define (parse in pat)
-  (apply values (for/list ([x (in-string pat)])
+(define (parse in pat . lst)
+  (apply values (append (for/list ([x (in-string pat)])
     (cond
      [(equal? x #\b) (read-byte in)]
      [(equal? x #\s) (read-ssh-string in)]
+     [(equal? x #\X) (read-ssh-string-raw in)]
      [(equal? x #\i) (read-ssh-uint32 in)]
      [(equal? x #\B) (read-ssh-bool in)]
-     [else (say x)]))))
+     [else (say x)])) lst)))
 
-(define (recvp io pat)
+(define (parse/bs str pat) (parse (open-input-bytes str) pat))
+
+(define (recvp io type pat)
   (define in (open-input-bytes (send io recv-packet)))
-  (parse io pat))
+  (assert/equal? type (read-byte in))
+  (parse in pat))
+
+(define (recv+ io type pat)
+  (define in (open-input-bytes (send io recv-packet)))
+  (assert/equal? type (read-byte in))
+  (parse in pat in))
+
+(define (recv++ io type pat)
+  (define pkt (send io recv-packet))
+  (define in (open-input-bytes pkt))
+  (assert/equal? type (read-byte in))
+  (parse in pat pkt in))
 
 (define (->bytes x)
   (cond [(string? x) (string->bytes/locale x)]
@@ -78,6 +98,14 @@
 
 (define (read-ssh-uint32 in) (->int32 (read-bytes 4 in)))
 (define (read-ssh-string in) (read-bytes (read-ssh-uint32 in) in))
+(define (read-ssh-string-raw in) 
+  (define out (open-output-bytes))
+  (define lenbytes (read-bytes 4 in))
+  (define len (->int32 lenbytes))
+  (write-bytes lenbytes out)
+  (write-bytes (read-bytes len in) out)
+  (get-output-bytes out))
+
 (define (read-ssh-bool in) (if (= 0 (read-byte in)) #f #t))
 (define (random-bytes cnt) (apply bytes (for/list ([x (in-range cnt)]) (random 256))))
 
@@ -89,4 +117,23 @@
         [(null? strs) #""]
         [(null? (cdr strs)) (car strs)]
         [else (apply bytes-append (add-between strs sep))]))
+
+(define (hex-bytes->bytes bstr)
+  (let* ([len (bytes-length bstr)]
+         [bstr2l (/ len 2)]
+         [bstr2 (make-bytes bstr2l)]
+         [digit
+          (lambda (v)
+            (if (v . <= . (char->integer #\9))
+                (- v (char->integer #\0))
+            (if (v . <= . (char->integer #\F))
+                (+ (- v (char->integer #\A)) 10)
+                (+ (- v (char->integer #\a)) 10))))])
+    (for ([i (in-range bstr2l)])
+      (let ([c1 (bytes-ref bstr (* 2 i))]
+            [c2 (bytes-ref bstr (+ (* 2 i) 1))])
+        ;(printf "~a ~a ~a ~a\n" c1 c2 (digit c1) (digit c2))
+        (bytes-set! bstr2 i (bitwise-ior (arithmetic-shift (digit c1) 4)
+                                         (digit c2)))))
+    bstr2))
 
