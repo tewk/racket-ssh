@@ -1,7 +1,7 @@
 #lang racket
-(require "ssh_openssl.rkt"
-         "ssh-utils.rkt"
-         "ssh-msg-ids.rkt")
+(require "ssh-openssl.rkt"
+         "utils.rkt"
+         "constants.rkt")
 
 (provide  algorithm-negotiation
           do-key-exchange)

@@ -1,7 +1,7 @@
 #lang racket
-(require "ssh-utils.rkt")
-(require "ssh-msg-ids.rkt")
-(require "ssh_openssl.rkt")
+(require "utils.rkt")
+(require "constants.rkt")
+(require "ssh-openssl.rkt")
 
 (provide do-client-user-auth
          do-server-user-auth)
