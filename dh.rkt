@@ -71,6 +71,9 @@
   (cons CLIENT_KEX_PAYLOAD (cons SERVER_KEX_PAYLOAD (negotiate SERVER_ALGORITHMS CLIENT_ALGORITHMS))))
 
 (define (do-key-exchange io handshake algorithms role)
+  (match-define (list client-kex-payload server-kex-payload kex-alg pub-priv-alg client-sym server-sym client-hmac server-hmac client-comp server-comp) algorithms)
+
+  (define kex-length-requirement (max 8 (cipher-length client-sym) (cipher-length server-sym) (hmac-size client-hmac) (hmac-size server-hmac)))
   (define (diffie-hellman-exchange-hash hasher->bin group-info cpub spub ssh-shared-secret public-host-key-blob)
     (match-define (list client-version server-version) handshake)
     (match-define (list client-kex-payload server-kex-payload kex-alg pub-priv-alg client-sym server-sym client-hmac server-hmac client-comp server-comp) algorithms)
@@ -87,7 +90,7 @@
       ssh-shared-secret))
 
   (define (client-diffie-hellman hasher->bin sshp sshg init-id reply-id group-info)
-    (define-values (dh cpub) (DiffieHellman-get-public-key sshp sshg 20))
+    (define-values (dh cpub) (DiffieHellman-get-public-key sshp sshg kex-length-requirement))
     (sendp io init-id cpub)
 
     (define-values (host-key-buf server-pub sig-buf) (recvp io reply-id "sXs"))
@@ -101,7 +104,7 @@
 
   (define (server-diffie-hellman hasher->bin sshp sshg init-id reply-id group-info)
     (define-values (cpub) (recvp io init-id "X"))              ;  S <- C
-    (define-values (spub ssh-shared-secret) (DiffieHellman-get-shared-secret/S sshp sshg cpub))
+    (define-values (spub ssh-shared-secret) (DiffieHellman-get-shared-secret/S sshp sshg cpub kex-length-requirement))
     (define public-host-key-blob (ssh-host-public-file->blob "/home/tewk/.ssh/rktsshhost.pub"))
 
     (define exchange-hash (diffie-hellman-exchange-hash hasher->bin group-info cpub spub ssh-shared-secret public-host-key-blob))
@@ -153,8 +156,6 @@
       #"EE386BFB5A899FA5AE9F24117C4B1FE6"
       #"49286651ECE65381FFFFFFFFFFFFFFFF"))))
   (define sshg1 (build-ssh-bytes (bytes 2)))
-
-  (match-define (list client-kex-payload server-kex-payload kex-alg pub-priv-alg client-sym server-sym client-hmac server-hmac client-comp server-comp) algorithms)
 
   (define (init-streams exchange-hash ssh-shared-secret hasher->bin)
     (sendp io SSH_MSG_NEWKEYS)

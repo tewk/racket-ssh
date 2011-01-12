@@ -116,7 +116,7 @@
             (if (= (bytes-ref x 4) 0) 5 4) 
             (bytes-length x)))
 
-(define (DiffieHellman-get-public-key _pbs _gbs)
+(define (DiffieHellman-get-public-key _pbs _gbs kex-bytes-length)
   (define pbs (sshbytes->string _pbs))
   (define gbs (sshbytes->string _gbs))
   (define dh (DH_new))
@@ -125,7 +125,7 @@
 
   (set-DH-p! dh (BN_bin2bn pbs (bytes-length pbs) p))
   (set-DH-g! dh (BN_bin2bn gbs (bytes-length gbs) g))
-  (DiffieHellmanGenerateKey dh (* 20 8))
+  (DiffieHellmanGenerateKey dh (* kex-bytes-length 8))
   (values dh (build-ssh-bn (DH-pub_key dh))))
 
 (define (MD5-it d)
@@ -141,8 +141,8 @@
   (DH_compute_key shared-secret peer-key dh)
   (build-ssh-bin shared-secret))
 
-(define (DiffieHellman-get-shared-secret/S pbs gbs peer-public-key)
-  (define-values (dh pub_key) (DiffieHellman-get-public-key pbs gbs))
+(define (DiffieHellman-get-shared-secret/S pbs gbs peer-public-key kex-bytes-length)
+  (define-values (dh pub_key) (DiffieHellman-get-public-key pbs gbs kex-bytes-length))
   (define ssh-shared-secret (DiffieHellman-get-shared-secret/C dh peer-public-key))
   (values pub_key ssh-shared-secret))
 
@@ -254,6 +254,9 @@
   (HMAC_Update hcntx data (bytes-length data))
   (define rl (HMAC_Final hcntx result))
   result)
+
+(define/provide (hmac-size ssh-name) (EVP_MD_size ((ssh-name->hmac ssh-name))))
+(define/provide (cipher-length ssh-name) (EVP_CIPHER_key_length  ((ssh-name->cipher ssh-name))))
 
 (define/provide (cipher-init ccntx ssh-name ec iv en/de)
   (define rc (EVP_CipherInit_ex ccntx ((ssh-name->cipher ssh-name)) #f ec iv en/de))

@@ -59,6 +59,8 @@
 (define-crypto-func OpenSSL_add_all_digests    (_fun -> _void))
 
 (define EVP_MAX_MD_SIZE 64)
+;(define EVP_MAX_MD_SIZE (16+20) /* The SSLv3 md5+sha1 type */
+
 (define HMAC_MAX_MD_CBLOCK 128)
 (define NID_sha1 64)
 (define SHA1_DIGEST_LENGTH 20)
@@ -142,19 +144,16 @@
 
 (define-crypto-func EVP_MD_CTX_copy_ex  (_fun _EVP_MD_CTX-pointer _EVP_MD_CTX-pointer -> _int))
 (define-crypto-func EVP_MD_CTX_copy     (_fun _EVP_MD_CTX-pointer _EVP_MD_CTX-pointer -> _int))
-(define-crypto-func EVP_MD_block_size   (_fun _EVP_MD-pointer -> _int))
+
+(define-crypto-func EVP_MD_type         (_fun _EVP_MD-pointer -> _int))
+(define-crypto-func EVP_MD_pkey_type    (_fun _EVP_MD-pointer -> _int))
 (define-crypto-func EVP_MD_size         (_fun _EVP_MD-pointer -> _int))
-; #define EVP_MAX_MD_SIZE (16+20) /* The SSLv3 md5+sha1 type */
+(define-crypto-func EVP_MD_block_size   (_fun _EVP_MD-pointer -> _int))
 
-; #define EVP_MD_type(e)                 ((e)->type)
-; #define EVP_MD_pkey_type(e)            ((e)->pkey_type)
-; #define EVP_MD_size(e)                 ((e)->md_size)
-; #define EVP_MD_block_size(e)           ((e)->block_size)
-
-; #define EVP_MD_CTX_md(e)               (e)->digest)
-; #define EVP_MD_CTX_size(e)             EVP_MD_size((e)->digest)
-; #define EVP_MD_CTX_block_size(e)       EVP_MD_block_size((e)->digest)
-; #define EVP_MD_CTX_type(e)             EVP_MD_type((e)->digest)
+(define-crypto-func EVP_MD_CTX_md         (_fun _EVP_MD_CTX-pointer -> _int))
+(define-crypto-func EVP_MD_CTX_size       (_fun _EVP_MD_CTX-pointer -> _int))
+(define-crypto-func EVP_MD_CTX_block_size (_fun _EVP_MD_CTX-pointer -> _int))
+(define-crypto-func EVP_MD_CTX_type       (_fun _EVP_MD_CTX-pointer -> _int))
 
 (define-crypto-func EVP_md_null   (_fun -> _EVP_MD-pointer))
 (define-crypto-func EVP_md2       (_fun -> _EVP_MD-pointer))
@@ -215,10 +214,6 @@
 (define-crypto-func EVP_CIPHER_CTX_set_key_length (_fun  _EVP_CIPHER_CTX-pointer _int -> _int))
 (define-crypto-func EVP_CIPHER_CTX_ctrl (_fun _EVP_CIPHER_CTX-pointer _int _int _pointer -> _int))
 
-(define-crypto-func EVP_CIPHER_CTX_block_size (_fun _EVP_CIPHER_CTX-pointer -> _int))
-(define-crypto-func EVP_CIPHER_CTX_key_length (_fun _EVP_CIPHER_CTX-pointer -> _int))
-(define-crypto-func EVP_CIPHER_CTX_iv_length  (_fun _EVP_CIPHER_CTX-pointer -> _int))
-
 (define-crypto-func EVP_EncryptInit_ex (_fun _EVP_CIPHER_CTX-pointer _EVP_CIPHER-pointer (_or-null _ENGINE-pointer) (_or-null (_ptr i _bytes)) (_or-null (_ptr i _bytes)) -> _int))
 (define-crypto-func EVP_EncryptUpdate (_fun _EVP_CIPHER_CTX-pointer _bytes (_ptr io _int) _bytes _int -> _int))
 (define-crypto-func EVP_EncryptFinal_ex (_fun _EVP_CIPHER_CTX-pointer _bytes (_ptr io _int) -> _int))
@@ -244,24 +239,24 @@
 ;#define EVP_get_cipherbynid(a) EVP_get_cipherbyname(OBJ_nid2sn(a))
 ;#define EVP_get_cipherbyobj(a) EVP_get_cipherbynid(OBJ_obj2nid(a))
 
-;#define EVP_CIPHER_nid(e)              ((e)->nid)
-;#define EVP_CIPHER_block_size(e)       ((e)->block_size)
-;#define EVP_CIPHER_key_length(e)       ((e)->key_len)
-;#define EVP_CIPHER_iv_length(e)                ((e)->iv_len)
-;#define EVP_CIPHER_flags(e)            ((e)->flags)
-;#define EVP_CIPHER_mode(e)             ((e)->flags) & EVP_CIPH_MODE)
-(define-crypto-func EVP_CIPHER_type (_fun _EVP_CIPHER-pointer -> _int))
+(define-crypto-func EVP_CIPHER_nid        (_fun _EVP_CIPHER-pointer -> _int))
+(define-crypto-func EVP_CIPHER_block_size (_fun _EVP_CIPHER-pointer -> _int))
+(define-crypto-func EVP_CIPHER_key_length (_fun _EVP_CIPHER-pointer -> _int))
+(define-crypto-func EVP_CIPHER_iv_length  (_fun _EVP_CIPHER-pointer -> _int))
+(define-crypto-func EVP_CIPHER_flags      (_fun _EVP_CIPHER-pointer -> _int))
+;(define-crypto-func EVP_CIPHER_mode       (_fun _EVP_CIPHER-pointer -> _int)) ( e) (  ( e)->flags) & EVP_CIPH_MODE)
+(define-crypto-func EVP_CIPHER_type       (_fun _EVP_CIPHER-pointer -> _int))
 
-;#define EVP_CIPHER_CTX_cipher(e)       ((e)->cipher)
-;#define EVP_CIPHER_CTX_nid(e)          ((e)->cipher->nid)
-;#define EVP_CIPHER_CTX_block_size(e)   ((e)->cipher->block_size)
-;#define EVP_CIPHER_CTX_key_length(e)   ((e)->key_len)
-;#define EVP_CIPHER_CTX_iv_length(e)    ((e)->cipher->iv_len)
-;#define EVP_CIPHER_CTX_get_app_data(e) ((e)->app_data)
-;#define EVP_CIPHER_CTX_set_app_data(e,d) ((e)->app_data=(char *)(d))
-;#define EVP_CIPHER_CTX_type(c)         EVP_CIPHER_type(EVP_CIPHER_CTX_cipher(c))
-;#define EVP_CIPHER_CTX_flags(e)                ((e)->cipher->flags)
-;#define EVP_CIPHER_CTX_mode(e)         ((e)->cipher->flags & EVP_CIPH_MODE)
+(define-crypto-func EVP_CIPHER_CTX_cipher       (_fun _EVP_CIPHER_CTX-pointer -> _EVP_CIPHER-pointer ))
+(define-crypto-func EVP_CIPHER_CTX_nid          (_fun _EVP_CIPHER_CTX-pointer -> _int))
+(define-crypto-func EVP_CIPHER_CTX_block_size   (_fun _EVP_CIPHER_CTX-pointer -> _int))
+(define-crypto-func EVP_CIPHER_CTX_key_length   (_fun _EVP_CIPHER_CTX-pointer -> _int))
+(define-crypto-func EVP_CIPHER_CTX_iv_length    (_fun _EVP_CIPHER_CTX-pointer -> _int))
+(define-crypto-func EVP_CIPHER_CTX_get_app_data (_fun _EVP_CIPHER_CTX-pointer -> _pointer))
+(define-crypto-func EVP_CIPHER_CTX_set_app_data (_fun _EVP_CIPHER_CTX-pointer _pointer -> _int))
+(define-crypto-func EVP_CIPHER_CTX_type         (_fun _EVP_CIPHER_CTX-pointer -> _int))
+(define-crypto-func EVP_CIPHER_CTX_flags        (_fun _EVP_CIPHER_CTX-pointer -> _int))
+;(define-crypto-func EVP_CIPHER_CTX_mode         (_fun _EVP_CIPHER_CTX-pointer -> _int))                 ( e) (  ( e)->cipher->flags & EVP_CIPH_MODE)
 
 (define-crypto-func EVP_CIPHER_param_to_asn1 (_fun _EVP_CIPHER_CTX-pointer _ASN1_TYPE-pointer -> _int)) 
 (define-crypto-func EVP_CIPHER_asn1_to_param (_fun _EVP_CIPHER_CTX-pointer _ASN1_TYPE-pointer -> _int))
