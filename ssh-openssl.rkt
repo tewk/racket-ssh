@@ -19,6 +19,8 @@
          sha1-rsa-signature
          sha1-rsa-signature/fn
          sha1-rsa-verify/bin
+         sha1-rsa-verify/e_n
+         sha1-rsa-verify/sha1/e_n
          ssh-host-public-file->blob
          bytes->hex-string)
 
@@ -36,9 +38,16 @@
     (RSA_sign NID_sha1 digest (bytes-length digest) sb sl pk)
     (subbytes sb 0 sl)))
 
+(define (sha1-rsa-verify/sha1/e_n b e n sig)
+  (sha1-rsa-verify/e_n (sha1->bin b) e n sig))
+
+(define (sha1-rsa-verify/e_n b e n sig)
+  (define pk (bin_e_n->RSAPublicKey e n))
+  (RSA_verify NID_sha1 b (bytes-length b) sig (bytes-length sig) pk))
+
 (define (sha1-rsa-verify/bin b key sig)
   (define pk (bin->RSAPublicKey key))
-  (RSA_verify NID_sha1 b (bytes-length b) sig (bytes-length sig) key))
+  (RSA_verify NID_sha1 b (bytes-length b) sig (bytes-length sig) pk))
 
 (define (sha1-rsa-signature b key)
   (let ([digest (make-bytes EVP_MAX_MD_SIZE)]
@@ -60,7 +69,7 @@
   (define bio #f)
   (dynamic-wind
     (lambda () (set! bio (BIO_new_file (->bytes fn) #"r")))
-    ``(lambda () (PEM_read_bio_PrivateKey bio #f #f #f))
+    (lambda () (PEM_read_bio_PrivateKey bio #f #f #f))
     (lambda () (BIO_free bio))))
 
 (define (fn->RSAPrivateKey fn)
@@ -105,6 +114,12 @@
   (if (not (= 0 (bitwise-and #x80 (bytes-ref b 0))))
     (bytes-append (->bytes (+ bl 1)) (bytes 0) b)
     (bytes-append (->bytes bl) b)))
+
+(define (ssh-bin->bn-bin b)
+  (define bl (bytes-length b))
+  (if (= 0 (bytes-ref b 0))
+    (subbytes b 1 bl)
+    b))
 
 (define (build-ssh-bn bn)
   (define b (make-bytes (BN_num_bytes bn) 0))
@@ -296,3 +311,15 @@
 (define (ssh-host-public-file->blob fn)
   (define b64 (call-with-input-file fn port->bytes))
   (base64-decode (regexp-replace #px"\\S+\\s+(\\S+)\\s+\\S+" b64 #"\\1")))
+
+(define (bin_e_n->RSAPublicKey e n)
+  (define rsa (RSA_new))
+  (define BNe (BN_new))
+  (define BNn (BN_new))
+  (define ee (ssh-bin->bn-bin e))
+  (define nn (ssh-bin->bn-bin n))
+  (BN_bin2bn ee (bytes-length ee) BNe)
+  (BN_bin2bn nn (bytes-length nn) BNn)
+  (set-RSA-e! rsa BNe)
+  (set-RSA-n! rsa BNn)
+  rsa)

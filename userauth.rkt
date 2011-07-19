@@ -7,13 +7,13 @@
          do-server-user-auth)
 
 (define (do-client-user-auth io)
-  (sendp io SSH_MSG_SERVICE_REQUEST #"ssh-userauth")
-  (unless (recv/assert io SSH_MSG_SERVICE_ACCEPT #"ssh-userauth")
+  (sendp io SSH_MSG_SERVICE_REQUEST "ssh-userauth")
+  (unless (recv/assert io SSH_MSG_SERVICE_ACCEPT "ssh-userauth")
     (error 'do-client-user-auth "BAD USER AUTH SERVICE REQUEST"))
 
-  (sendp io SSH_MSG_USERAUTH_REQUEST "tewk" "SERVICE" "publickey" #f "rsa" "boo")
-  (recv/assert io SSH_MSG_USERAUTH_PK_OK "rsa" "boo")
-  (sendp io SSH_MSG_USERAUTH_REQUEST "tewk" "SERVICE" "publickey" #t "rsa" "boo" "boos")
+  (sendp io SSH_MSG_USERAUTH_REQUEST "tewk" "ssh-conenction" "publickey" #f "ssh-rsa" "boo")
+  (recv/assert io SSH_MSG_USERAUTH_PK_OK "ssh-rsa" "boo")
+  (sendp io SSH_MSG_USERAUTH_REQUEST "tewk" "ssh-connection" "publickey" #t "ssh-rsa" "boo" "boos")
   (recv/assert io SSH_MSG_USERAUTH_SUCCESS))
 
 
@@ -30,14 +30,14 @@
       (define-values (bool algo keyy) (parse in "Bss"))
       (if bool 
         (let ([sign (read-ssh-string in)])
-          (define local-sig (bytes-append (->sshb sessionid)
-                              (bytes SSH_MSG_USERAUTH_REQUEST)
-                              (->sshb user serv type bool algo keyy)))
-          (if (equal? sign local-sig)
+          (define-values (key-alg key1 key2) (parse/bs keyy "sss"))
+          (define-values (sig-alg sig) (parse/bs sign "ss"))
+          (define local-sig (unparse "sbsssBss" sessionid SSH_MSG_USERAUTH_REQUEST user serv type bool algo keyy))
+          (define rc (sha1-rsa-verify/sha1/e_n local-sig key1 key2 sig))
+          (if (= rc 1)
             (auth-success io)
             (auth-failure io "publickey")))
         (let ()
-          (printf "~a ~a ~a ~a ~a ~a\n~a\n" pktid user serv type bool algo (bytes->hex-string keyy))
           (sendp io SSH_MSG_USERAUTH_PK_OK (->sshb algo keyy))
           (parse-auth-request io sessionid)))]
     [(bytes=? type #"none") (auth-failure io "publickey")]
@@ -49,6 +49,6 @@
 
 (define (do-server-user-auth io sessionid)
   (recv/assert io SSH_MSG_SERVICE_REQUEST "ssh-userauth")
-  (sendp io SSH_MSG_SERVICE_ACCEPT #"ssh-userauth")
+  (sendp io SSH_MSG_SERVICE_ACCEPT "ssh-userauth")
   (parse-auth-request io sessionid))
 

@@ -6,6 +6,7 @@
 
 (provide (struct-out BN)
          (struct-out DH)
+         (struct-out RSA)
          EVP_MAX_MD_SIZE
          SHA1_DIGEST_LENGTH
          SHA256_DIGEST_LENGTH
@@ -35,12 +36,35 @@
 
 (define-cstruct _BN ([j1 _long] [top _int] [dmax _int] [neg _int] [flags _int]))
 (define-cstruct _DH ([pad _int] [version _int] [p _BN-pointer][g _BN-pointer] [length _long] [pub_key _BN-pointer] [priv_key _BN-pointer]))
+(define-cstruct _RSA ([pad _long] 
+                      [version _long] 
+                      [meth _pointer]
+                      [engine _pointer]
+                      [n _BN-pointer]
+                      [e _BN-pointer]
+                      [d _BN-pointer]
+                      [p _BN-pointer]
+                      [q _BN-pointer]
+                      [dmp1 _BN-pointer]
+                      [dmq1 _BN-pointer]
+                      [iqmp _BN-pointer]
+                      ;[ex_data _int]
+                      [sk _pointer]
+                      [dummy _int]
+
+                      [references _int]
+                      [flags _int]
+                      [_method_mod_n _pointer]
+                      [_method_mod_p _pointer]
+                      [_method_mod_q _pointer]
+                      [bignum_data _bytes]
+                      [blinding _pointer]
+                      [mt_blinding _pointer]))
 
 
 (define _MD5_CTX-pointer _pointer)
 (define _SHA1_CTX-pointer _pointer)
 (define _SHA256_CTX-pointer _pointer)
-(define _RSA-pointer _pointer)
 (define _DSA-pointer _pointer)
 (define _EC_KEY-pointer _pointer)
 (define _BIO-pointer _pointer)
@@ -126,6 +150,7 @@
 (define-crypto-func SHA256             (_fun _bytes _long (_ptr i _bytes)        -> _int))
 (define-crypto-func SHA256_Transform   (_fun _SHA256_CTX-pointer _bytes          -> _void))
 
+(define-crypto-func RSA_new    (_fun -> _RSA-pointer))
 (define-crypto-func RSA_sign   (_fun _int _bytes _int _bytes (_ptr io _int) _RSA-pointer -> _int))
 (define-crypto-func RSA_verify (_fun _int _bytes _int _bytes _int _RSA-pointer           -> _int))
 (define-crypto-func RSA_size   (_fun _RSA-pointer           -> _int))

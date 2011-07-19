@@ -100,7 +100,7 @@
             (define enc-prefix (read-bytes prefix-size s))  
             (define prefix (decrypt-begin cipher enc-prefix IV))
             (define packet-len (->int32 (subbytes prefix 0 4)))
-            (when (packet-len . > . 1024) (error "PACKET TO LONG ~a" packet-len))
+            (when (packet-len . > . 1024) (error "PACKET TO LONG" packet-len))
             (define bytes-left (+ (- packet-len prefix-size) 4))
             (define-values (enc-rest rest)
               (if (bytes-left . > . 0)
@@ -180,8 +180,8 @@
   (class object%
     (field (io null))
     (define/public (connect host port)
-      (define role 'server)
-      (define-values (in out) (tcp-connect "localhost" 2224))
+      (define role 'client)
+      (define-values (in out) (tcp-connect host port))
       (set! io (new ssh-transport (in in) (out out)))
 
       (define handshake (do-handshake io role))
@@ -216,5 +216,6 @@
 
 
 (match (current-command-line-arguments)
-  [(vector) (send (new ssh (host "localhost") (port 22)) connect "localhost" 2224)]
-  [(vector "s") (send (new sshd (host "localhost") (port 2222)) listen)])
+  [(vector) (send (new ssh) connect "localhost" 2222)]
+  [(vector "s") (send (new sshd (host "localhost") (port 2222)) listen)]
+  [(vector "l") (send (new ssh) connect "localhost" 22)])

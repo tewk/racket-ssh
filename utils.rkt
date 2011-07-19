@@ -22,6 +22,7 @@
          bytes-join
          parse
          parse/bs
+         unparse
          hex-bytes->bytes)
 
 (define (say x) (printf "~a~n" x) x)
@@ -54,6 +55,19 @@
      [(equal? x #\B) (read-ssh-bool in)]
      [else (say x)])) lst)))
 
+(define (unparse pat . lst)
+  (define out (open-output-bytes))
+  (for/list ([x (in-string pat)]
+             [y  lst])
+    (cond
+     [(equal? x #\b) (write-byte y out)]
+     [(equal? x #\X) (write-bytes y out)]
+     [(equal? x #\s) (write-bytes (->sshbytes y) out)]
+     [(equal? x #\i) (write-bytes (->sshbytes y) out)]
+     [(equal? x #\B) (write-bytes (->sshbytes y) out)]
+     [else (say x)]))
+  (get-output-bytes out))
+
 (define (parse/bs str pat) (parse (open-input-bytes str) pat))
 
 (define (recvp io type pat)
@@ -83,11 +97,14 @@
   (cond [(string? x) (build-ssh-bytes (string->bytes/locale x))]
         [else (->bytes x)]))
 
+(define (->sshbytes x)
+  (cond [(bytes? x) (build-ssh-bytes x)]
+        [else (->sbytes x)]))
+
 (define (->sshb . lst)
   (for/fold ([r #""]) ([x lst])
     (bytes-append r 
-      (cond [(bytes? x) (build-ssh-bytes x)]
-            [else (->sbytes x)]))))
+      (->sshbytes x))))
 
 (define (build-ssh-bytes data)
   (define byte-data (->bytes data))

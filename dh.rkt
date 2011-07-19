@@ -94,12 +94,13 @@
     (sendp io init-id cpub)
 
     (define-values (host-key-buf server-pub sig-buf) (recvp io reply-id "sXs"))
-    (define-values (server-host-key host-key-cert) (parse/bs host-key-buf "ss"))
+    (define-values (server-key-type server-key-e server-key-n) (parse/bs host-key-buf "sss"))
     (define-values (sig-type sig) (parse/bs sig-buf "ss"))
     (define-values (ssh-shared-secret) (DiffieHellman-get-shared-secret/C dh server-pub))
 
-    (define exchange-hash (diffie-hellman-exchange-hash hasher->bin group-info cpub server-pub ssh-shared-secret server-host-key))
-    (unless (sha1-rsa-verify/bin server-host-key exchange-hash) (error "a"))
+    (define exchange-hash (diffie-hellman-exchange-hash hasher->bin group-info cpub server-pub ssh-shared-secret host-key-buf))
+    (define rc (sha1-rsa-verify/sha1/e_n exchange-hash server-key-e server-key-n sig))
+    (unless rc (error "a"))
     (init-streams exchange-hash ssh-shared-secret hasher->bin))
 
   (define (server-diffie-hellman hasher->bin sshp sshg init-id reply-id group-info)
