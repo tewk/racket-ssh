@@ -33,7 +33,10 @@
     (map ->sbytes others))))
 
 (define (assert/equal? a b)
-  (unless (equal? a b) (error 'assert/equal? "X~aX doesn't match X~aX" a b)))
+  (unless (equal? a b) 
+    (displayln (bytes->hex-string a))
+    (displayln (bytes->hex-string b))
+    (error 'assert/equal? "X~aX doesn't match X~aX" a b)))
 
 (define (recv/assert io type . others)
   (define pkt (send io recv-packet))

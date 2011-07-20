@@ -116,10 +116,13 @@
 (define-crypto-func PEM_read_bio_PrivateKey     (_fun _BIO-pointer (_or-null _EVP_PKEY-pointer) (_or-null _pointer) (_or-null _pointer) -> _EVP_PKEY-pointer))
 (define-crypto-func PEM_read_PrivateKey         (_fun _FILE-pointer (_or-null _EVP_PKEY-pointer) (_or-null _pointer) (_or-null _pointer) -> _EVP_PKEY-pointer))
 
-(define-crypto-func PEM_read_bio_RSAPublicKey  (_fun _BIO-pointer (_or-null _RSA-pointer) (_or-null _pointer) (_or-null _pointer)  -> _RSA-pointer))
+(define-crypto-func PEM_read_bio_RSAPublicKey  (_fun _BIO-pointer (_or-null _RSA-pointer) (_or-null _pointer) (_or-null _pointer)  -> (_or-null _RSA-pointer)))
 (define-crypto-func PEM_read_RSAPublicKey      (_fun _FILE-pointer _RSA-pointer _pointer _pointer -> _RSA-pointer))
 (define-crypto-func PEM_read_bio_PublicKey     (_fun _BIO-pointer (_or-null _EVP_PKEY-pointer) (_or-null _pointer) (_or-null _pointer) -> _EVP_PKEY-pointer))
 (define-crypto-func PEM_read_PublicKey         (_fun _FILE-pointer (_or-null _EVP_PKEY-pointer) (_or-null _pointer) (_or-null _pointer) -> _EVP_PKEY-pointer))
+
+
+(define-crypto-func PEM_write_bio_RSAPublicKey (_fun _BIO-pointer _RSA-pointer -> _int))
 
 (define-crypto-func BIO_s_file   (_fun                                   -> _BIO_METHOD-pointer))
 (define-crypto-func BIO_new_file (_fun _bytes _bytes                     -> _BIO-pointer))

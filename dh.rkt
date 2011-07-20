@@ -109,7 +109,7 @@
     (define public-host-key-blob (ssh-host-public-file->blob "/home/tewk/.ssh/rktsshhost.pub"))
 
     (define exchange-hash (diffie-hellman-exchange-hash hasher->bin group-info cpub spub ssh-shared-secret public-host-key-blob))
-    (define signature (sha1-rsa-signature/fn "/home/tewk/.ssh/rktsshhost" exchange-hash))
+    (define signature (sha1-rsa-sign/fn "/home/tewk/.ssh/rktsshhost" exchange-hash))
     (sendp io reply-id
       (build-ssh-bytes public-host-key-blob)
       spub

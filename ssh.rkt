@@ -186,8 +186,8 @@
 
       (define handshake (do-handshake io role))
       (define algs (algorithm-negotiation io role))
-      (do-key-exchange io handshake algs role)
-      (do-client-user-auth io))
+      (define exchange-hash (do-key-exchange io handshake algs role))
+      (do-client-user-auth io exchange-hash))
 
     (super-new)))
 

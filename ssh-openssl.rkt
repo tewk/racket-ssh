@@ -16,27 +16,16 @@
          sha256->hex
          sha256->bin
          fn->EVP_PKEY-private
-         sha1-rsa-signature
-         sha1-rsa-signature/fn
+         fn->RSAPrivateKey
+         ssh-public-key-file->RSAPublicKey
+         sha1-rsa-sign/fn
+         sha1-rsa-sign/key
          sha1-rsa-verify/bin
          sha1-rsa-verify/e_n
          sha1-rsa-verify/sha1/e_n
          ssh-host-public-file->blob
-         bytes->hex-string)
-
-(define (sha1-rsa-signature/fn fn b)
-  (let ([db (make-bytes EVP_MAX_MD_SIZE)]
-        [dl EVP_MAX_MD_SIZE]
-        [ctx (EVP_MD_CTX_create)])
-    (EVP_DigestInit ctx (EVP_sha1))
-    (EVP_DigestUpdate ctx b (bytes-length b))
-    (EVP_DigestFinal ctx db dl)
-    (define digest (subbytes db 0 20))
-    (define pk (fn->RSAPrivateKey fn))
-    (define sl (RSA_size pk))
-    (define sb (make-bytes sl))
-    (RSA_sign NID_sha1 digest (bytes-length digest) sb sl pk)
-    (subbytes sb 0 sl)))
+         bytes->hex-string
+         RSAPublicKey->ssh_keyblob)
 
 (define (sha1-rsa-verify/sha1/e_n b e n sig)
   (sha1-rsa-verify/e_n (sha1->bin b) e n sig))
@@ -49,14 +38,17 @@
   (define pk (bin->RSAPublicKey key))
   (RSA_verify NID_sha1 b (bytes-length b) sig (bytes-length sig) pk))
 
-(define (sha1-rsa-signature b key)
-  (let ([digest (make-bytes EVP_MAX_MD_SIZE)]
-        [dl EVP_MAX_MD_SIZE]
-        [ctx (EVP_MD_CTX_create)])
-    (EVP_DigestInit ctx (EVP_sha1))
-    (EVP_DigestUpdate ctx b (bytes-length b))
-    (EVP_SignFinal ctx digest dl key)
-    (subbytes digest 0 dl)))
+(define (sha1-rsa-sign/key msg privkey)
+  (define digest (sha1->bin msg))
+  (define sl (RSA_size privkey))
+  (define sb (make-bytes sl))
+  (RSA_sign NID_sha1 digest (bytes-length digest) sb sl privkey)
+  sb)
+
+(define (sha1-rsa-sign/fn fn b)
+  (define pk (fn->RSAPrivateKey fn))
+  (sha1-rsa-sign/key b pk))
+
 
 (define (bin->EVP_PKEY-private bin)
   (define bio #f)
@@ -88,9 +80,9 @@
 
 (define (sha1->hex . lst)
   (bytes->hex-string (apply sha1->bin lst)))
+
 (define (sha1->bin . lst)
   (let ([ctx (malloc 256)]
-        [tmp (make-bytes 4096)]
         [result (make-bytes SHA1_DIGEST_LENGTH)])
     (SHA1_Init ctx)
     (for ([x lst]) (SHA1_Update ctx x (bytes-length x)))
@@ -99,13 +91,12 @@
 
 (define (sha256->hex . lst)
   (bytes->hex-string (apply sha256->bin lst)))
+
 (define (sha256->bin . lst)
   (let ([ctx (malloc 256)]
-        [tmp (make-bytes 4096)]
         [result (make-bytes SHA256_DIGEST_LENGTH)])
     (SHA256_Init ctx)
-    (for ([x lst]) 
-      (SHA256_Update ctx x (bytes-length x)))
+    (for ([x lst]) (SHA256_Update ctx x (bytes-length x)))
     (SHA256_Final result ctx)
     result))
 
@@ -323,3 +314,17 @@
   (set-RSA-e! rsa BNe)
   (set-RSA-n! rsa BNn)
   rsa)
+
+(define (ssh_keyblob->RSAPublicKey k)
+  (define-values (key-alg e n ) (parse/bs k "sss"))
+  (bin_e_n->RSAPublicKey e n))
+
+(define (ssh-public-key-file->RSAPublicKey fn)
+  (ssh_keyblob->RSAPublicKey (ssh-host-public-file->blob fn)))
+
+(define (RSAPublicKey->ssh_keyblob k)
+  (define e (make-bytes (BN_num_bytes (RSA-e k)) 0))
+  (define n (make-bytes (BN_num_bytes (RSA-n k)) 0))
+  (define bl1 (BN_bn2bin (RSA-e k) e))
+  (define bl2 (BN_bn2bin (RSA-n k) n))
+  (unparse "sXX" "ssh-rsa" (build-ssh-bin (subbytes e 0 bl1)) (build-ssh-bin (subbytes n 0 bl2))))
