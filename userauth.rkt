@@ -19,7 +19,6 @@
 
 
   (define local-sig (unparse "sbsssBss" sessionid SSH_MSG_USERAUTH_REQUEST user serv "publickey" #t algo pubkey-sshblob))
-  (printf "LS: ~a\n" (bytes->hex-string local-sig))
   (define sig (sha1-rsa-sign/key local-sig privkey))
 
   (sendp io SSH_MSG_USERAUTH_REQUEST user serv "publickey" #f algo (build-ssh-bytes pubkey-sshblob))
@@ -29,9 +28,11 @@
 
 
 (define (auth-failure io others)
-  (sendp io SSH_MSG_USERAUTH_FAILURE others))
+  (sendp io SSH_MSG_USERAUTH_FAILURE others #f)
+  #f)
 (define (auth-success io)
-  (sendp io SSH_MSG_USERAUTH_SUCCESS))
+  (sendp io SSH_MSG_USERAUTH_SUCCESS)
+  #t)
 
 (define (parse-auth-request io sessionid)
   (define in (open-input-bytes (send io recv-packet)))
@@ -44,7 +45,6 @@
           (define-values (key-alg key1 key2) (parse/bs keyy "sss"))
           (define-values (sig-alg sig) (parse/bs sign "ss"))
           (define local-sig (unparse "sbsssBss" sessionid SSH_MSG_USERAUTH_REQUEST user serv type bool algo keyy))
-           (printf "LS: ~a\n" (bytes->hex-string local-sig))
 
           (define rc (sha1-rsa-verify/sha1/e_n local-sig key1 key2 sig))
           (if (= rc 1)
@@ -53,7 +53,9 @@
         (let ()
           (sendp io SSH_MSG_USERAUTH_PK_OK (->sshb algo keyy))
           (parse-auth-request io sessionid)))]
-    [(bytes=? type #"none") (auth-failure io "publickey")]
+    [(bytes=? type #"none")
+      (auth-failure io "publickey")
+      (parse-auth-request io sessionid)]
     [(bytes=? type #"password")
       (define-values (bool pass) (parse in "Bs"))
       (if (equal? pass #"BOGUSBOGUS")

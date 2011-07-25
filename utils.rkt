@@ -23,11 +23,13 @@
          parse
          parse/bs
          unparse
-         hex-bytes->bytes)
+         hex-bytes->bytes
+         bytes->hex-string)
 
 (define (say x) (printf "~a~n" x) x)
 
 (define (sendp io type . others)
+;  (printf "DATAOUT~a\n" (bytes->hex-string (apply bytes-append (bytes type) (map ->sbytes others))))
   (send io send-packet (apply bytes-append
     (bytes type)
     (map ->sbytes others))))

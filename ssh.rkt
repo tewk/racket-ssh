@@ -1,10 +1,12 @@
 #lang racket
-(require "ssh-openssl.rkt")
-(require "utils.rkt")
-(require "constants.rkt")
-(require "userauth.rkt")
-(require "dh.rkt")
-(require racket/pretty)
+(require "ssh-openssl.rkt"
+         "utils.rkt"
+         "constants.rkt"
+         "userauth.rkt"
+         "dh.rkt"
+         "connection.rkt"
+         "rsync-session.rkt"
+         racket/pretty)
 
 (define b->hs bytes->hex-string)
  
@@ -100,7 +102,7 @@
             (define enc-prefix (read-bytes prefix-size s))  
             (define prefix (decrypt-begin cipher enc-prefix IV))
             (define packet-len (->int32 (subbytes prefix 0 4)))
-            (when (packet-len . > . 1024) (error "PACKET TO LONG" packet-len))
+            ;(when (packet-len . > . 1024) (error "PACKET TO LONG" packet-len))
             (define bytes-left (+ (- packet-len prefix-size) 4))
             (define-values (enc-rest rest)
               (if (bytes-left . > . 0)
@@ -187,7 +189,11 @@
       (define handshake (do-handshake io role))
       (define algs (algorithm-negotiation io role))
       (define exchange-hash (do-key-exchange io handshake algs role))
-      (do-client-user-auth io exchange-hash))
+      (do-client-user-auth io exchange-hash)
+      (define conn (new connection% [io io]))
+      ;(define sess (send conn new-cmd-session "ls"))
+      (define sess (send conn new-custon-session (new rsync-session%)))
+      (send conn event-loop))
 
     (super-new)))
 
@@ -205,7 +211,15 @@
       (define algs (algorithm-negotiation io role))
       (define exchange-hash (do-key-exchange io handshake algs role))
 
-      (do-server-user-auth io exchange-hash))
+      (do-server-user-auth io exchange-hash)
+      (define conn (new connection% [io io]))
+      (send conn server-event-loop)
+
+      (define-values (send-pkt recv-pkt) (curry-io io))
+      (define ppp (recv-pkt))
+      (printf "A~a\n" (bytes->hex-string ppp)))
+
+
 
     (define (gp)
       (define-values (send-pkt recv-pkt) (curry-io io))
