@@ -2,7 +2,8 @@
 (require racket/class
          "constants.rkt"
          "session.rkt"
-         "utils.rkt")
+         "utils.rkt"
+         "rsync-session.rkt")
 
 (provide connection%)
 
@@ -142,7 +143,7 @@
             [(equal? type #"session")
               (define s (new session% [in chid] [io io]))
               (hash-set! sessions chid s)
-              (send s server-setup out 3 4096)]
+              (send s server-setup out (* 2 1024 1024) 4096)]
             [else 
               (printf "SSH_MSG_CHANNEL_OPEN ~a ~a ~a ~a\n" type out iws mps)])]
         [(= pktid SSH_MSG_GLOBAL_REQUEST)
@@ -184,7 +185,13 @@
                 [(equal? type #"window-change")
                   (define-values (wc hr wp hp) (parse ps "iiii"))
                   (session/window-change s wc hr wp hp)]
-                [(equal? type #"exec") (printf "CMD: ~a\n" (parse ps "s"))]
+                [(equal? type #"exec")
+                  (define cmd (parse ps "s"))
+                  (printf "CMD: ~a\n" cmd)
+                  (when (equal? #"rsync" (subbytes cmd 0 5))
+                    (hash-set! sessions chid 
+                      (new rsync-session% [upgrade-session s])))]
+
                 [(equal? type #"shell") (void)]
                 [else
                   (printf "CRE: ~a ~a\n" type resp)])])])

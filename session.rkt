@@ -20,6 +20,7 @@
     
   (define/public (channel/failure reason-code descr lang-tag)
     (error "DIE DIE DIE"))
+
   (define/public (send-data data)
     (sendp io SSH_MSG_CHANNEL_DATA (->sshb out) (->sshb data)))
 
@@ -32,6 +33,8 @@
     (set! iws _iws)
     (set! mps _mps)
     (sendp io SSH_MSG_CHANNEL_OPEN_CONFIRMATION (->sshb out) (->sshb in) (->sshb iws) (->sshb mps)))
+
+  (define/public (get-params) (values io in out iws mps))
 
   (define/public (eof)                            (printf "EOF\n"))
   (define/public (stderr type data)               (printf "~a" data) (flush-output))
