@@ -1,3 +1,5 @@
+#!/usr/bin/env racket
+
 #lang racket
 (require "ssh-openssl.rkt"
          "utils.rkt"
@@ -165,7 +167,7 @@
 
 (define (server? x) (eq? x 'server))
 (define (do-handshake io role)
-  (define RACKET-SSH-VERSION #"SSH-2.0-RacketSSH_0.1p0 Racket5.0")
+  (define RACKET-SSH-VERSION (string->bytes/locale (format "SSH-2.0-RacketSSH_0.1p0 Racket~a" (version))))
   (send io send-raw RACKET-SSH-VERSION #"\r\n")
   (define PEER-VERSION (send io read-line))
 
