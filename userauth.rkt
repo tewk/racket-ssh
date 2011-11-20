@@ -6,25 +6,44 @@
 (provide do-client-user-auth
          do-server-user-auth)
 
-(define (do-client-user-auth io sessionid #:user [user "tewk"] #:service [serv "ssh-connection"] #:key-filename 
-                             [keyfile "/home/tewk/.ssh/tewk2010_2"])
+(define (do-client-user-auth io sessionid #:user [user "tewk"] #:service [serv "ssh-connection"] #:keyfiles 
+                             [keyfiles (list "/home/tewk/.ssh/tewk2010_2")])
   (sendp io SSH_MSG_SERVICE_REQUEST "ssh-userauth")
   (unless (recv/assert io SSH_MSG_SERVICE_ACCEPT "ssh-userauth")
     (error 'do-client-user-auth "BAD USER AUTH SERVICE REQUEST"))
 
-  (define privkey (fn->RSAPrivateKey keyfile))
-  (define pubkey  (ssh-public-key-file->RSAPublicKey (string-append keyfile ".pub")))
-  (define pubkey-sshblob (RSAPublicKey->ssh_keyblob pubkey))
-  (define algo "ssh-rsa")
+  (let loop ([keys keyfiles])
+    (match keys
+      [(list) #f]
+      [(list-rest head tail)
+        (define privkey (fn->RSAPrivateKey head))
+        (define pubkey  (ssh-public-key-file->RSAPublicKey (string-append head ".pub")))
+        (define pubkey-sshblob (RSAPublicKey->ssh_keyblob pubkey))
+        (define algo "ssh-rsa")
 
+        (sendp io SSH_MSG_USERAUTH_REQUEST user serv "publickey" #f algo (build-ssh-bytes pubkey-sshblob))
 
-  (define local-sig (unparse "sbsssBss" sessionid SSH_MSG_USERAUTH_REQUEST user serv "publickey" #t algo pubkey-sshblob))
-  (define sig (sha1-rsa-sign/key local-sig privkey))
-
-  (sendp io SSH_MSG_USERAUTH_REQUEST user serv "publickey" #f algo (build-ssh-bytes pubkey-sshblob))
-  (recv/assert io SSH_MSG_USERAUTH_PK_OK "ssh-rsa" pubkey-sshblob)
-  (sendp io SSH_MSG_USERAUTH_REQUEST user serv "publickey" #t algo (build-ssh-bytes pubkey-sshblob) (build-ssh-bytes (unparse "ss" "ssh-rsa" sig)))
-  (recv/assert io SSH_MSG_USERAUTH_SUCCESS))
+        (define-values (pktid in) (recv/in io "b"))
+        (cond
+          [(equal? pktid SSH_MSG_USERAUTH_PK_OK)
+            (define local-sig (unparse "sbsssBss" sessionid SSH_MSG_USERAUTH_REQUEST user serv "publickey" #t algo pubkey-sshblob))
+            (define sig (sha1-rsa-sign/key local-sig privkey))
+            (sendp io 
+                   SSH_MSG_USERAUTH_REQUEST 
+                   user 
+                   serv 
+                   "publickey" 
+                   #t 
+                   algo 
+                   (build-ssh-bytes pubkey-sshblob) 
+                   (build-ssh-bytes (unparse "ss" "ssh-rsa" sig)))
+            (define-values (pktid in) (recv/in io "b"))
+            (cond 
+              [(equal? pktid SSH_MSG_USERAUTH_SUCCESS) #t]
+              [(equal? pktid SSH_MSG_USERAUTH_FAILURE) (loop tail)]
+              [else (error "Unexpected pktid ~a" pktid)])]
+          [(equal? pktid SSH_MSG_USERAUTH_FAILURE) (loop tail)]
+          [else (error "Unexpected pktid ~a" pktid)])])))
 
 
 (define (auth-failure io others)

@@ -9,6 +9,8 @@
          recv+
          recv++
          recv/assert
+         recv/in
+         recv/pkt/in
          ->bytes
          ->sbytes
          build-ssh-bytes
@@ -74,6 +76,20 @@
   (get-output-bytes out))
 
 (define (parse/bs str pat) (parse (open-input-bytes str) pat))
+
+(define (recv io pat)
+  (define in (open-input-bytes (send io recv-packet)))
+  (parse in pat))
+
+(define (recv/in io pat)
+  (define in (open-input-bytes (send io recv-packet)))
+  (parse in pat in))
+
+(define (recv/pkt/in io type pat)
+  (define pkt (send io recv-packet))
+  (define in (open-input-bytes pkt))
+  (assert/equal? type (read-byte in))
+  (parse in pat pkt in))
 
 (define (recvp io type pat)
   (define in (open-input-bytes (send io recv-packet)))

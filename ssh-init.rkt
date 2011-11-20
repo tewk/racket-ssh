@@ -1,5 +1,3 @@
-#!/usr/bin/env racket
-
 #lang racket
 (require "ssh-openssl.rkt"
          "utils.rkt"
@@ -8,7 +6,10 @@
          "dh.rkt"
          "connection.rkt"
          "rsync-session.rkt"
+         "unix.rkt"
          racket/pretty)
+
+(provide ssh)
 
 (define b->hs bytes->hex-string)
  
@@ -183,7 +184,7 @@
 (define ssh
   (class object%
     (field (io null))
-    (define/public (connect host port)
+    (define/public (connect host #:port [port 22] #:user [user (get-user-name)])
       (define role 'client)
       (define-values (in out) (tcp-connect host port))
       (set! io (new ssh-transport (in in) (out out)))
@@ -229,9 +230,3 @@
       (printf "A~a\n" (bytes->hex-string ppp)))
 
     (super-new)))
-
-
-(match (current-command-line-arguments)
-  [(vector) (send (new ssh) connect "localhost" 2222)]
-  [(vector "s") (send (new sshd (host "localhost") (port 2222)) listen)]
-  [(vector "l") (send (new ssh) connect "localhost" 22)])

@@ -2,7 +2,9 @@
 (require racket/class
          "utils.rkt"
          "constants.rkt"
-         "session.rkt")
+         "session.rkt"
+         (for-syntax racket/base)
+         racket/date)
 
 (provide rsync-session%)
 
@@ -19,6 +21,7 @@
 (define XMIT_SAME_DEV            (arithmetic-shift 1 10))
 (define XMIT_RDEV_MINOR_IS_SMALL (arithmetic-shift 1 11))
 (define PRESERVE_LINKS           (arithmetic-shift 1 0))
+(define XMIT_MOD_NSEC            (arithmetic-shift 1 13))
 
 (define (islink? mode)
   (bitwise-and #x1 mode))
@@ -32,12 +35,22 @@
 (define-syntax-rule (let/ccc k body ...)
   (call-with-composable-continuation (lambda (k) body ...)))
 
+(define-syntax (define-flag-pred stx)
+  (syntax-case stx ()
+    [(_ flag)
+    (with-syntax ([name (string->symbol (string-append "is-" (symbol->string (syntax->datum #'flag)) "?"))])
+      #'(define (name f) (not (= 0 (bitwise-and f flag)))))]))
+
 (define rsync-session%
   (class session%
   (init-field [upgrade-session #f])
   (field [server #f])
-  (field [k #f])
+  (field [k (box #f)])
   (field [k2 #f])
+  (field [_s #f]
+         [_o #f]
+         [_i #f]
+         [_e #f])
   (inherit-field in)
   (inherit-field io)
   (inherit-field out)
@@ -58,22 +71,100 @@
       (set! in  _in)
       (set! out _out)
       (set! server #t))
+
+    (define (is-XMIT_EXTENDED_FLAGS? flags) (not (= 0 (bitwise-and flags XMIT_EXTENDED_FLAGS))))
+    (define (is-XMIT_SAME_NAME? flags) (not (= 0 (bitwise-and flags XMIT_SAME_NAME))))
+    (define (is-XMIT_LONG_NAME? flags) (not (= 0 (bitwise-and flags XMIT_LONG_NAME))))
+    (define (is-XMIT_MOD_NSEC? flags) (not (= 0 (bitwise-and flags XMIT_MOD_NSEC))))
+    (define (is-XMIT_SAME_MODE? flags) (not (= 0 (bitwise-and flags XMIT_SAME_MODE))))
+    (define-flag-pred XMIT_SAME_UID)
+    (define-flag-pred XMIT_SAME_GID)
+
+    (define (read-byte-int) (bytes-ref (read-s-byte) 0))
+    (define (read-30varuint32) (read-uint32))
+    (define (read-varint) (read-uint32))
+
+    (define (read-flags)
+      (define flag1 (bytes-ref (read-s-byte) 0))
+      (cond
+        [(is-XMIT_EXTENDED_FLAGS? flag1) 
+         (bitwise-ior flag1
+                     (arithmetic-shift (read-byte-int) 8))]
+        [else flag1]))
+
+    (define (print-flags flags)
+      (printf "XMIT_TOP_DIR        ~a\n" (bitwise-and flags XMIT_TOP_DIR))
+      (printf "XMIT_SAME_MODE      ~a\n" (bitwise-and flags XMIT_SAME_MODE))   
+      (printf "XMIT_EXTENDED_FLAGS ~a\n" (bitwise-and flags XMIT_EXTENDED_FLAGS)) 
+      (printf "XMIT_SAME_UID       ~a\n" (bitwise-and flags XMIT_SAME_UID))
+      (printf "XMIT_SAME_GID       ~a\n" (bitwise-and flags XMIT_SAME_GID))
+      (printf "XMIT_SAME_NAME      ~a\n" (bitwise-and flags XMIT_SAME_NAME))
+      (printf "XMIT_LONG_NAME      ~a\n" (bitwise-and flags XMIT_LONG_NAME))
+      (printf "XMIT_SAME_TIME      ~a\n" (bitwise-and flags XMIT_SAME_TIME))
+      (printf "XMIT_SAME_RDEV_MAJOR~a\n" (bitwise-and flags XMIT_SAME_RDEV_MAJOR))
+      (printf "XMIT_HAS_IDEV_DATA  ~a\n" (bitwise-and flags XMIT_HAS_IDEV_DATA))
+      (printf "XMIT_SAME_DEV       ~a\n" (bitwise-and flags XMIT_SAME_DEV))
+      (printf "XMIT_RDEV_MINOR_IS_SMALL ~a\n"(bitwise-and flags XMIT_RDEV_MINOR_IS_SMALL))
+      (printf "XMIT_MOD_NSEC            ~a\n"(bitwise-and flags XMIT_MOD_NSEC)))
+
+
+
+    (define (read-file-metadata flags lastname)
+      (define l1 (if (is-XMIT_SAME_NAME? flags) (read-byte-int) 0))
+      (define l2 (if (is-XMIT_LONG_NAME? flags) (read-byte-int) (read-byte-int)))
+      (define file-name 
+        (let ([postfix (read-s-bytes l2)])
+          (cond
+            [(not (zero? l1))
+                  (bytes-append (subbytes lastname 0 l1) postfix)]
+            [else postfix])))
+      (define file-size (read-30varuint32))
+      (define mod-seconds (read-30varuint32))
+      (printf "nseconds ~a\n" (is-XMIT_MOD_NSEC? flags))
+      (define mod-nseconds (if (is-XMIT_MOD_NSEC? flags) (read-varint) 0))
+      (define file-mode (if (not (is-XMIT_SAME_MODE? flags)) (read-varint) 0))
+      (read-varint)
+
+      (printf "FILENAME ~a ~a ~a\n" file-name file-size (date->string (seconds->date mod-seconds) #t))
+      (list file-name file-size mod-seconds file-mode))
+
+
     
-    (printf "Sending version\n")
-    (send-data2 (uint32->vax 30))  ;version
+    (printf "Sending version ~a\n" server)
+    (send-data2 (uint32->vax 28))  ;version
     (cond [server (send-data2 (bytes-append (bytes #x00) (bytes #x46 #xe5 #x59 #x98)))]
-          [else (read-s-byte) (read-s-bytes 4)])
+          [else (read-s-bytes 4)
+                ;(read-s-byte)
+                (define checksum (read-s-bytes 4))
+                ;(send-data2 (uint32->vax (inexact->exact (round (/ (current-inexact-milliseconds) 1000)))))])
+                (send-data2 (uint32->vax 0))
+                (read-s-bytes 3)
+                (let loop ([flags (read-flags)]
+                           [lastname #""])
+                  (print-flags flags)
+                  (when (not (zero? flags))
+                    (define fi (read-file-metadata flags lastname))
+                    (loop (read-flags) (list-ref fi 0))))
+                (send-data2 (uint32->vax 0))
+                (send-data2 (uint32->vax 0))
+                (send-data2 (uint32->vax 0))
+                (send-data2 (uint32->vax 0))
+                ])
   )
 
   (define/public (read-s-bytes n)
     (let loop ()
       (cond
-        [(buffer-has-n n) (read-bytes n pi)]
+        [(buffer-has-n n)
+         (define d (read-bytes n pi))
+         (printf "rsync reads ~a ~a\n" (bytes->hex-string d) n)
+         d]
         [else
+          (printf "Buffer has ~a needs ~a\n" (pipe-content-length pi) n)
           (call/cc (lambda (kt)
-            (set! k kt)
-            (k2))
-          (loop))])))
+            (set-box! k kt)
+            (k2)))
+          (loop)])))
 
   (define/public (read-s-byte)
     (read-s-bytes 1))
@@ -95,7 +186,14 @@
 
   (define/override (channel/success sc _iws _mps)
     (super channel/success sc _iws _mps)
-    (sendp io SSH_MSG_CHANNEL_REQUEST out "exec" #f "rsync --server -e.Lsf . /home/tewk/Hamlet2.vob"))
+    (sendp io SSH_MSG_CHANNEL_REQUEST out "exec" #f "rsync --server --sender -e.Lsf . /home/tewk/WardCampFlyer.svg /home/tewk/WardCamp2011.pdf")
+    (define-values (s o i e) (subprocess #f #f #f "/usr/bin/rsync" "--server" "-e.Lsf" "." "/home/tewk/WardCampFlyer.svg" "/home/tewk/WardCamp2011.pdf"))
+    (set! _s s)
+    (set! _o o)
+    (set! _i i)
+    (set! _e e))
+
+                                        
 
   (define/override (stderr type data)               (printf "~a\n" (bytes->hex-string data)) (flush-output))
   (define/override (stdout data)
@@ -105,16 +203,38 @@
             [else (printf  ".")]))
     (newline)
     (flush-output)
+
+    (write-bytes data _i)
+    (flush-output _i)
+    (sleep 1)
+
+    (define b (make-bytes 4096 0))
+    (let loop ()
+      (define bl (read-bytes-avail!* b _o))
+
+      (when (not (zero? bl))
+        (printf "DATAOUT1: ~a\n" (bytes->hex-string (subbytes b 0 bl)))
+        (for ([x (bytes->string/latin-1 (subbytes b 0 bl))])
+          (cond [(or (char-alphabetic? x) (char-numeric? x) (char-symbolic? x)) (printf "~a" x)]
+                [else (printf  ".")]))
+        (newline)
+        (flush-output)
+        (send-data2 (subbytes b 0 bl))
+        (loop))))
+
+#|
     (write-bytes data po)
+    (flush-output po)
     (cond
-      [k (k)]
+      [(unbox k) ((unbox k) 'dddd)]
       [else
         (call/cc (lambda (die)
           (call/cc (lambda (kk)
             (set! k2 kk)
             (do-rsync die )))
-            (set! k die)))
+            ))
         ]))
+|#
 
   (define/public (read/file-list config-flags)
     (let loop ([flags1 (read-s-byte)]
