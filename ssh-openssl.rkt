@@ -243,7 +243,7 @@
   c)
 
 (define/provide (make-hmac)
-  (define c (malloc 240))
+  (define c (malloc 512))
   (HMAC_CTX_init c)
   c)
 
